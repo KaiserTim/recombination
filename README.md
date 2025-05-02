@@ -1,2 +1,2 @@
-# recombination
-Recombination experiment for Diffusion memorization paper
+# Recombination experiment for the Diffusion memorization paper
+
