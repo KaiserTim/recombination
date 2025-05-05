@@ -14,7 +14,7 @@ conda activate edm
 python extract_features.py \
   --dataset=in64 \
   --outdir=/home/shared/generative_models/recombination/embeddings/in64/train/ \
-  --max_size 5000 ;
+  --max_size 50000 ;
 
 # Visual-VAE
 #python extract_features.py \
