@@ -66,9 +66,6 @@ def get_dataset_path(dataset):
         dataset_folder = '/home/shared/DataSets/cifar-10'
         dataset_path = f'{dataset_folder}/cifar10-32x32_incp_dino_804_512.zip'
         n_imgs = 48085
-    elif dataset == 'in64':
-        dataset_path = f'/home/shared/generative_models/recombination/raw_samples/in64/{dataset}/'
-        dataset_folder = None
     elif os.path.isdir(dataset):
         dataset_path = dataset_folder = dataset
         n_imgs = 0  # Count the images in this folder
