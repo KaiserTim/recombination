@@ -425,7 +425,6 @@ def visualize_patch_sources(image_index, indices, gen_dataset, train_dataset, n_
     plt.show()
 
 
-
 def visualize_patch_match_grid(image_index, gen_dataset, train_dataset, indices, gen_model, save_dir=None):
     """
     Display a generated image and a 14x14 grid of its nearest neighbor patches.
