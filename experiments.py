@@ -6,6 +6,7 @@ import faiss
 import matplotlib.pyplot as plt
 import sys
 import torchvision.transforms.functional as TF
+
 import dnnlib
 
 from matplotlib import colormaps as cm
@@ -33,7 +34,7 @@ def load_embeddings(path, n=-1):
     return embeds[:n]
 
 
-def flatten_embeddings(embeddings):
+def prepare_embeddings(embeddings):
     """Flatten patchwise tensor from (n, 256, D) → (n*256, D).
     
     Args:
@@ -45,12 +46,18 @@ def flatten_embeddings(embeddings):
             - int: Original number of images n
     """
     N, P, D = embeddings.shape
-    return embeddings.view(-1, D), N
+    embeddings_np = embeddings.view(-1, D).detach().cpu().numpy().astype('float32')
+
+    # Normalize features
+    # train_np = train_np / np.linalg.norm(train_np, axis=-1, keepdims=True)
+    faiss.normalize_L2(embeddings_np)
+
+    return embeddings_np, N
 
 
 # ----------- A. Nearest Neighbor Patch Matches -----------
 
-def create_index(path_train, n_train, save_dir, chunk_size=1024):
+def create_index(path_train, n_train, save_dir, metric='l2', chunk_size=1024):
     """Creates a FAISS index from training embeddings in chunks and saves to the specified directory.
 
     This function processes a specified number of training embeddings, divides them into smaller
@@ -68,65 +75,65 @@ def create_index(path_train, n_train, save_dir, chunk_size=1024):
         None
     """
     chunk_dir = os.path.join(save_dir, "faiss_index")
-    assert os.path.isdir(chunk_dir), f"Chunk dir doesn't exist: {chunk_dir}"
     os.makedirs(chunk_dir, exist_ok=True)
 
     train_embeds = None
-    # pbar = tqdm(range(0, n_train, chunk_size), desc=f"Creating new FAISS index in chunks of size {chunk_size}...")
+    pbar = None
     for i in range(0, n_train, chunk_size):
         chunk_path = os.path.join(chunk_dir, f"chunk_{i:07d}.bin")
         if os.path.isfile(chunk_path):
             continue
-        if train_embeds is None:
+        if pbar is None:  # Initialize the progress bar only if needed
             train_embeds = load_embeddings(path_train, n_train)
             print(f"Loaded {train_embeds.shape[0]} training image embeddings with {train_embeds.shape[1]} patches each.")
+            pbar = tqdm(range(0, n_train, chunk_size), desc="", dynamic_ncols=True, file=sys.stdout)
         chunk = train_embeds[i:i + chunk_size].to('cuda')  # Slice the chunk
-        chunk_index = compute_faiss_index(chunk, use_gpu=True)
-
+        chunk_index = compute_faiss_index(chunk, use_gpu=True, metric=metric)
         faiss.write_index(faiss.index_gpu_to_cpu(chunk_index), chunk_path)
-        print(f"Saved FAISS index chunk to {chunk_path}")
+        if pbar is not None:
+            pbar.set_description(f"Creating new FAISS index in chunks of size {chunk_size}")
+        pbar.update(n=1)
+    if pbar is not None:
+        pbar.close()
+        print(f"Saved FAISS index chunks to {chunk_dir}")
 
 
-def compute_faiss_index(data, use_gpu, batch_size=1024):
+def compute_faiss_index(data, use_gpu, metric, batch_size=1024):
     """
     Create a FAISS index for nearest neighbor search.
     Inputs:
         data: Embeddings of image patches, (n_imgs, n_patches, D)
         use_gpu: Whether to use GPU for FAISS index
+         metric: Distance metric to use ('l2' or 'cosine')
         batch_size: Batch size for FAISS search (higher values will increase search speed but require more memory)
     Returns:
         all_indices: Indices of k-nearest neighbors from the training data for each patch, (n_gen, n_patches, k)
         all_distances: The corresponding distances, (n_gen, n_patches, k)
     """
     n_gen, n_patches, _ = data.shape
-    train_flat, n_imgs = flatten_embeddings(data)  # (n_imgs * n_patches, D)
-
-    # Convert to float32 numpy arrays
-    train_np = train_flat.detach().cpu().numpy().astype('float32')
-
+    train_np, n_imgs = prepare_embeddings(data)  # (n_imgs * n_patches, D)
     embed_dim = train_np.shape[1]
 
     def add_to_faiss_index(index, data, batch_size, use_gpu):
         """Helper function to add batches of data to the FAISS index with a progress bar."""
-        pbar = tqdm(total=len(data), desc=f"Building FAISS index with {n_gen} images and {n_patches} patches each.", file=sys.stdout, dynamic_ncols=True, leave=True)
+        # pbar = tqdm(total=len(data), desc=f"Building FAISS index with {n_gen} images and {n_patches} patches each.", file=sys.stdout, dynamic_ncols=True, leave=True)
         for i in range(0, len(data), batch_size):
             batch = data[i:i + batch_size]
             index.add(batch)
-            if use_gpu:  # Display GPU memory usage if applicable
-                allocated = torch.cuda.memory_allocated() / (1024 ** 3)  # In GB
-                reserved = torch.cuda.memory_reserved() / (1024 ** 3)  # In GB
-                pbar.set_postfix({"GPU Alloc (GB)": f"{allocated:.2f}", "GPU Resrv (GB)": f"{reserved:.2f}"})
-            pbar.update(len(batch))
-
-        pbar.close()
+            # if use_gpu:  # Display GPU memory usage if applicable
+            #     allocated = torch.cuda.memory_allocated() / (1024 ** 3)  # In GB
+            #     reserved = torch.cuda.memory_reserved() / (1024 ** 3)  # In GB
+                # pbar.set_postfix({"GPU Alloc (GB)": f"{allocated:.2f}", "GPU Resrv (GB)": f"{reserved:.2f}"})
+            # pbar.update(len(batch))
+        # pbar.close()
 
     # Build FAISS index
     if use_gpu:
         res = faiss.StandardGpuResources()
-        index = faiss.IndexFlatL2(embed_dim)
+        index = faiss.IndexFlatL2(embed_dim) if metric == 'l2' else faiss.IndexFlatIP(embed_dim)
         index = faiss.index_cpu_to_gpu(res, 0, index)
     else:
-        index = faiss.IndexFlatL2(embed_dim)
+        index = faiss.IndexFlatL2(embed_dim) if metric == 'l2' else faiss.IndexFlatIP(embed_dim)
 
     add_to_faiss_index(index, train_np, batch_size, use_gpu)
     assert index.ntotal == n_imgs * n_patches, "Index size does not match the number of training patches."
@@ -162,8 +169,7 @@ def compute_patchwise_nearest_neighbors(
     # Flatten generated embeddings
     n_gen, n_patches, dim = gen_embeds.shape
     print(f"Performing NN search for {n_gen} images with {n_patches} patches each...")
-    gen_flat, _ = flatten_embeddings(gen_embeds)  # Shape: (n_gen * n_patches, embed_dim)
-    gen_np = gen_flat.detach().cpu().numpy().astype('float32')
+    gen_np, _ = prepare_embeddings(gen_embeds)  # Shape: (n_gen * n_patches, embed_dim)
 
     # Prepare overall results
     all_indices = np.full((len(gen_np), k), -1, dtype=np.int32)  # Initialize to -1
@@ -174,7 +180,7 @@ def compute_patchwise_nearest_neighbors(
     chunk_paths = [path for path in chunk_paths if int(path.split('_')[-1].split('.')[0]) < n_train]
     print(f"Using {len(chunk_paths)} chunks from {n_train} training images from directory: {chunk_dir}")
 
-    pbar = tqdm(enumerate(chunk_paths), total=len(chunk_paths), desc="", dynamic_ncols=True)
+    pbar = tqdm(enumerate(chunk_paths), total=len(chunk_paths), desc="", dynamic_ncols=True, file=sys.stdout)
     for chunk_idx, chunk_path in pbar:
         pbar.set_description(f"Chunk {chunk_idx + 1}/{len(chunk_paths)} NN search")
         # Load and potentially truncate the index chunk
@@ -291,7 +297,7 @@ def visualize_histogram(hist, gen_model, top_k=50, save_dir=None):
     plt.xlabel("Training Image Index")
     plt.ylabel("# Patch Matches")
     plt.tight_layout()
-    plt.ylim([0,600])
+    # plt.ylim([0,600])
     if save_dir:
         save_path = f"{save_dir}/patch_origin_histogram_{gen_model}.png"
         plt.savefig(save_path, dpi=200, bbox_inches='tight')
@@ -324,8 +330,8 @@ def visualize_dist_histogram(distances, gen_model, save_dir=None):
     plt.title(f'Patch NN Distance Histogram - {gen_model}')
     plt.xlabel('Distance')
     plt.ylabel('# Patches')
-    plt.xlim([0, 3000])
-    plt.ylim([0, 12000])
+    # plt.xlim([0, 3000])
+    # plt.ylim([0, 12000])
     if save_dir:
         save_path = f"{save_dir}/patch_distance_hist_{gen_model}.png"
         plt.savefig(save_path, dpi=200, bbox_inches='tight')
@@ -338,7 +344,7 @@ def visualize_dist_histogram(distances, gen_model, save_dir=None):
     plt.title(f'Avg Patch NN Distance per Sample - {gen_model}')
     plt.xlabel('Mean Distance')
     plt.ylabel('# Generated Samples')
-    plt.xlim([500, 2500])
+    # plt.xlim([500, 2500])
     plt.ylim([0, 50])
     if save_dir:
         save_path = f"{save_dir}/mean_patch_distance_per_sample_{gen_model}.png"
@@ -375,12 +381,6 @@ def visualize_patch_sources(image_index, indices, gen_dataset, train_dataset, n_
     patch_size = int(H / n_patches ** 0.5)  # Figure out patch dimensions within the generated image
     image_sources = patch_sources // n_patches  # Map patch IDs to image IDs
 
-    # Summarize top contributors
-    bin_count = np.bincount(image_sources, minlength=n_train)
-    top_contributors = bin_count.argsort()[-10:][::-1]  # Get top 10 contributors in descending order
-    top_contributors_summary = ", ".join(f"{idx}: {bin_count[idx]}" for idx in top_contributors if bin_count[idx] > 0)
-    print(f"Top patch contributors: {top_contributors_summary}")
-
     # Normalize training IDs to [0, 1] for colormap
     normed_sources = image_sources / n_train
     colors = cm['hsv'](normed_sources)[:, :3]  # RGB colors
@@ -402,17 +402,21 @@ def visualize_patch_sources(image_index, indices, gen_dataset, train_dataset, n_
     # Blend the overlay with the original image using alpha compositing
     image_with_overlay = Image.alpha_composite(image, overlay)
 
+    # Summarize top contributors
+    bin_count = np.bincount(image_sources, minlength=n_train)
+    top_contributors = bin_count.argsort()[-10:][::-1]  # Get top 10 contributors in descending order
+    # top_contributors_summary = ", ".join(f"{idx}: {bin_count[idx]}" for idx in top_contributors if bin_count[idx] > 0)
+    # print(f"Top patch contributors: {top_contributors_summary}")
+
     # Get the training image with the most contributions
     most_contributing_image_idx = top_contributors[0]
     most_contributing_image = train_dataset[most_contributing_image_idx][0].transpose(1, 2, 0)  # Get training image
     if isinstance(most_contributing_image, np.ndarray):
         most_contributing_image = Image.fromarray(most_contributing_image)
 
-    # Plot side by side: Patch overlay and contributing training image
-    fig, axes = plt.subplots(1, 2, figsize=(8, 4))
-
-    # Plot the generated image with the patch overlay
-    for ax, img, title in zip(axes, [image_with_overlay, most_contributing_image], ["Generated Image", "Top Contributor"]):
+    # Side by side: Raw image and colored overlay
+    fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+    for ax, img, title in zip(axes, [image, image_with_overlay, most_contributing_image], ["Generated Image", "Colored Sources", f"Top Contributor ({bin_count[most_contributing_image_idx]})"]):
         ax.imshow(img)
         ax.set_title(title)
         ax.axis('off')
@@ -420,9 +424,9 @@ def visualize_patch_sources(image_index, indices, gen_dataset, train_dataset, n_
     plt.tight_layout()
     if save_dir:
         save_path = f"{save_dir}/colored_sources_{gen_model}_id{image_index}.png"
+        os.makedirs(save_dir, exist_ok=True)
         plt.savefig(save_path, dpi=200, bbox_inches='tight')
-        print(f"Saved visualization to {save_path}")
-    plt.show()
+    plt.close()
 
 
 def visualize_patch_match_grid(image_index, gen_dataset, train_dataset, indices, gen_model, save_dir=None):
@@ -481,33 +485,48 @@ def visualize_patch_match_grid(image_index, gen_dataset, train_dataset, indices,
     plt.tight_layout()
     if save_dir:
         save_path = f"{save_dir}/patch_reconstruction_{gen_model}_id{image_index}.png"
+        os.makedirs(save_dir, exist_ok=True)
         plt.savefig(save_path, dpi=200, bbox_inches='tight')
-        print(f"Saved patch reconstruction image to {save_path}")
-    plt.show()
+    plt.close()
 
 
 @click.command()
-@click.option('--embedding_folder', type=str,   default="/home/shared/generative_models/recombination/embeddings/in64", help="The folder where embeddings are stored.")
-@click.option('--gen_model',        type=str,   default="edm2-img64-xl-0671088",                                        help="The name of the EDM2 model.")
-@click.option('--load_nns',         type=bool,  default=True,                                                           help="Whether to load precomputed nearest neighbors.")
-@click.option('--save_dir',         type=str,   default="/home/shared/generative_models/recombination/saves",           help="The directory where results should be saved.")
-@click.option('--n_train',          type=int,   default=10000,                                                          help="How many training images to use for the NN search.")
-@click.option('--n_gen',            type=int,   default=-1,                                                             help="How many generated images to use for the NN search. '-1' = no limit")
-def main(embedding_folder, gen_model, load_nns, save_dir, n_train, n_gen):
-    path_train = f"{embedding_folder}/train/dinov2_features.pt"
-    path_gen = f"{embedding_folder}/{gen_model}/dinov2_features.pt"
+@click.option('--top_folder',       type=str,   default="/home/shared/generative_models/recombination", help="The folder where embeddings are stored.")
+@click.option('--dataset',          type=str,   default='in64', help="")
+@click.option('--gen_model',        type=str,   default="edm2-img64-xl-0671088",                        help="The name of the EDM2 model.")
+@click.option('--feature_model',    type=str,   default='swav-np16',                                    help="The name of the model used for feature extraction and its patch size.")
+@click.option('--load_nns',         type=bool,  default=True,                                           help="Whether to load precomputed nearest neighbors.")
+@click.option('--n_train',          type=int,   default=10000,                                          help="How many training images to use for the NN search.")
+@click.option('--n_gen',            type=int,   default=1000,                                           help="How many generated images to use for the NN search.")
+@click.option('--metric',           type=click.Choice(['l2', 'cosine']), default='cosine',
+              help="Distance metric to use for nearest neighbor search.")
+def main(top_folder, dataset, gen_model, feature_model, load_nns, n_train, n_gen, metric):
+    embedding_dir = os.path.join(top_folder, f'embeddings/{dataset}/{feature_model}')
+    save_dir = os.path.join(top_folder, f'saves/{dataset}/{metric}/{feature_model}')
+    results_dir = os.path.join(top_folder, f'results/{dataset}/{metric}/{feature_model}')
 
-    create_index(path_train, n_train, save_dir)  # Creates a bigger index if needed
+    train_dir = f"{embedding_dir}/train/"
+    gen_dir = f"{embedding_dir}/{gen_model}/"
+    train_files = [f for f in os.listdir(train_dir) if f.startswith('features_')]
+    gen_files = [f for f in os.listdir(gen_dir) if f.startswith('features_')]
+
+    path_train = os.path.join(train_dir, sorted(train_files)[-1])  # Take file with highest number
+    path_gen = os.path.join(gen_dir, sorted(gen_files)[-1])
+
+    create_index(path_train, n_train, save_dir, metric=metric)  # Creates a bigger index if needed
 
     print(f"\n-- {gen_model} --")
+    save_path = os.path.join(save_dir, f"{gen_model}/nearest_neighbors_t{n_train}_g{n_gen}.npz")
+    if load_nns and not os.path.exists(save_path):
+        print(f"--load_nns was True, but no saves for this configuration exist. Recomputing them...")
+        load_nns = False
     if load_nns:
-        save_path = os.path.join(save_dir, f"{gen_model}/nearest_neighbors_t{n_train}_g{n_gen}.npz")
         print(f"Loading nearest neighbors data from {save_path}")
         loaded = np.load(save_path)
         indices = loaded['indices']  # (n_gen, n_patches, 1)
         distances = loaded['distances']  # (n_gen, n_patches, 1)
-        assert indices.shape == (n_gen, 256, 1), f"Wrong indices shape: {indices.shape}"
-        assert distances.shape == (n_gen, 256, 1), f"Wrong distances shape: {distances.shape}"
+        assert indices.shape[0] == n_gen
+        assert distances.shape[0] == n_gen
     else:
         gen_embeds = load_embeddings(path_gen, n_gen).to('cuda')
         print(f"Loaded {gen_embeds.shape[0]} generated images with {gen_embeds.shape[1]} patches each.")
@@ -517,13 +536,12 @@ def main(embedding_folder, gen_model, load_nns, save_dir, n_train, n_gen):
             chunk_dir=os.path.join(save_dir, f"faiss_index"),
             n_train=n_train,
             k=1,
-            use_gpu=True
+            use_gpu=True,
         )  # (n_gen, n_patches, 1), (n_gen, n_patches, 1)
 
         os.makedirs(os.path.join(save_dir, gen_model), exist_ok=True)
 
         # Save arrays and metadata together
-        save_path = os.path.join(save_dir, f"{gen_model}/nearest_neighbors_t{n_train}_g{n_gen}.npz")
         np.savez(save_path,
                  indices=indices,
                  distances=distances,
@@ -542,13 +560,13 @@ def main(embedding_folder, gen_model, load_nns, save_dir, n_train, n_gen):
 
     print(f"Patch Origin Entropy: {ent:.4f}")
     print(f"Unique Training Sources: {uniq} / {n_train}")
-    os.makedirs(f"/home/shared/generative_models/recombination/results/{gen_model}", exist_ok=True)
+    os.makedirs(f"{results_dir}/{gen_model}", exist_ok=True)
     visualize_histogram(hist,
                         gen_model=gen_model,
-                        save_dir=f"/home/shared/generative_models/recombination/results/{gen_model}")
+                        save_dir=f"{results_dir}/{gen_model}")
     visualize_dist_histogram(distances,
                              gen_model=gen_model,
-                             save_dir=f"/home/shared/generative_models/recombination/results/{gen_model}")
+                             save_dir=f"{results_dir}/{gen_model}")
 
     # Load dataset of generated images
     gen_dataset_path = f"/home/shared/generative_models/recombination/raw_samples/in64/{gen_model}"
@@ -564,28 +582,30 @@ def main(embedding_folder, gen_model, load_nns, save_dir, n_train, n_gen):
     train_dataset_kwargs = dnnlib.EasyDict(class_name='dataset.ImageFolderDataset', path=train_dataset_path, max_size=n_train)
     train_dataset_obj = dnnlib.util.construct_class_by_name(**train_dataset_kwargs)
 
-    for idx in range(5):
+    for idx in range(64):
         visualize_patch_sources(image_index=idx,
                                 indices=indices,
                                 gen_dataset=gen_dataset_obj,
                                 train_dataset=train_dataset_obj,
                                 n_train=n_train,
                                 gen_model=gen_model,
-                                save_dir=f"/home/shared/generative_models/recombination/results/{gen_model}")
+                                save_dir=f"{results_dir}/{gen_model}/colored_sources")
 
         visualize_patch_match_grid(image_index=idx,
                                    gen_dataset=gen_dataset_obj,
                                    train_dataset=train_dataset_obj,
                                    indices=indices,
                                    gen_model=gen_model,
-                                   save_dir=f"/home/shared/generative_models/recombination/results/{gen_model}")
+                                   save_dir=f"{results_dir}/{gen_model}/patch_reconstructions")
+    print(f"Saved colored source visualizations to {f'{results_dir}/{gen_model}/colored_sources/'}")
+    print(f"Saved patch reconstruction visualizations to {f'{results_dir}/{gen_model}/colored_sources/'}")
 
     metrics_dict = {"nearest_neighbors_indices": indices,
                     "nearest_neighbors_distances": distances,
                     "patch_origin_histogram": hist,
                     "patch_origin_entropy": ent,
                     "unique_source_count": uniq}
-    torch.save(metrics_dict, f'/home/shared/generative_models/recombination/results/{gen_model}/metrics_results.pt')
+    torch.save(metrics_dict, f'{results_dir}/{gen_model}/metrics_results.pt')
 
 
 ### ----------- Main Execution Example -----------
