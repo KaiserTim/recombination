@@ -4,9 +4,9 @@ import torch
 import numpy as np
 import faiss
 import matplotlib.pyplot as plt
+from matplotlib.colors import Normalize
 import sys
-import torchvision.transforms.functional as TF
-
+import glob
 import dnnlib
 
 from matplotlib import colormaps as cm
@@ -57,7 +57,7 @@ def prepare_embeddings(embeddings):
 
 # ----------- A. Nearest Neighbor Patch Matches -----------
 
-def create_index(path_train, n_train, save_dir, metric='l2', chunk_size=1024):
+def create_index(path_train, n_train, save_dir, index_func, chunk_size=1024):
     """Creates a FAISS index from training embeddings in chunks and saves to the specified directory.
 
     This function processes a specified number of training embeddings, divides them into smaller
@@ -88,7 +88,7 @@ def create_index(path_train, n_train, save_dir, metric='l2', chunk_size=1024):
             print(f"Loaded {train_embeds.shape[0]} training image embeddings with {train_embeds.shape[1]} patches each.")
             pbar = tqdm(range(0, n_train, chunk_size), desc="", dynamic_ncols=True, file=sys.stdout)
         chunk = train_embeds[i:i + chunk_size].to('cuda')  # Slice the chunk
-        chunk_index = compute_faiss_index(chunk, use_gpu=True, metric=metric)
+        chunk_index = compute_faiss_index(chunk, index_func, use_gpu=True)
         faiss.write_index(faiss.index_gpu_to_cpu(chunk_index), chunk_path)
         if pbar is not None:
             pbar.set_description(f"Creating new FAISS index in chunks of size {chunk_size}")
@@ -98,7 +98,7 @@ def create_index(path_train, n_train, save_dir, metric='l2', chunk_size=1024):
         print(f"Saved FAISS index chunks to {chunk_dir}")
 
 
-def compute_faiss_index(data, use_gpu, metric, batch_size=1024):
+def compute_faiss_index(data, index_func, use_gpu, batch_size=1024):
     """
     Create a FAISS index for nearest neighbor search.
     Inputs:
@@ -130,10 +130,10 @@ def compute_faiss_index(data, use_gpu, metric, batch_size=1024):
     # Build FAISS index
     if use_gpu:
         res = faiss.StandardGpuResources()
-        index = faiss.IndexFlatL2(embed_dim) if metric == 'l2' else faiss.IndexFlatIP(embed_dim)
+        index = index_func(embed_dim)
         index = faiss.index_cpu_to_gpu(res, 0, index)
     else:
-        index = faiss.IndexFlatL2(embed_dim) if metric == 'l2' else faiss.IndexFlatIP(embed_dim)
+        index = index_func(embed_dim)
 
     add_to_faiss_index(index, train_np, batch_size, use_gpu)
     assert index.ntotal == n_imgs * n_patches, "Index size does not match the number of training patches."
@@ -144,9 +144,11 @@ def compute_patchwise_nearest_neighbors(
         gen_embeds,  # Generated embeddings, shape (n_gen, n_patches, D)
         chunk_dir,  # Directory containing the FAISS index chunks
         n_train,  # Number of total training images to use
+        index_func,  # FAISS index function, either faiss.IndexFlatL2 or faiss.IndexFlatIP
         k=1,  # Number of nearest neighbors to return
         use_gpu=True,  # Use GPU if available
         batch_size=16,  # Batch size for FAISS search
+        metric='l2',  # Distance metric used ('l2' or 'cosine')
 ):
     """
     Compute the nearest neighbors of each generated patch using FAISS index chunks.
@@ -155,16 +157,17 @@ def compute_patchwise_nearest_neighbors(
     Args:
         gen_embeds: Embeddings of generated patches, shape (n_gen, n_patches, D).
         chunk_dir: Path to the directory containing FAISS index chunks.
-        n_train_patches_per_chunk: Number of training patches contained in each FAISS index chunk.
+        n_train: Number of training images to use.
+        index_func: FAISS index function (IndexFlatL2 or IndexFlatIP).
         k: The number of nearest neighbors to return.
         use_gpu: Whether to use GPU for FAISS index processing.
         batch_size: Batch size for FAISS search.
+        metric: Distance metric ('l2' or 'cosine').
 
     Returns:
         all_indices: Indices of k-nearest neighbors for each generated patch, shape (n_gen, n_patches, k).
         all_distances: Corresponding distances of k-nearest neighbors, shape (n_gen, n_patches, k).
     """
-    import glob
 
     # Flatten generated embeddings
     n_gen, n_patches, dim = gen_embeds.shape
@@ -173,7 +176,12 @@ def compute_patchwise_nearest_neighbors(
 
     # Prepare overall results
     all_indices = np.full((len(gen_np), k), -1, dtype=np.int32)  # Initialize to -1
-    all_distances = np.full((len(gen_np), k), np.inf, dtype=np.float32)  # Initialize to infinity
+    if metric == 'l2':
+        # For L2, we want to minimize distance, so initialize to infinity
+        all_distances = np.full((len(gen_np), k), np.inf, dtype=np.float32) 
+    else:
+        # For cosine, we want to maximize similarity, so initialize to negative infinity
+        all_distances = np.full((len(gen_np), k), -np.inf, dtype=np.float32) 
 
     # Iterate through FAISS index chunks
     chunk_paths = sorted(glob.glob(f"{chunk_dir}/chunk_*.bin"))  # Sorted to ensure correct order
@@ -193,7 +201,7 @@ def compute_patchwise_nearest_neighbors(
 
             if remaining_allowed < index.ntotal:
                 # Truncate index to only keep the needed amount
-                new_index = faiss.IndexFlatL2(index.d)
+                new_index = index_func(index.d)
                 for i in range(remaining_allowed):  # Not efficient but fast enough when chunks are small
                     new_index.add(np.expand_dims(index.reconstruct(i), axis=0))
                 index = new_index
@@ -210,12 +218,20 @@ def compute_patchwise_nearest_neighbors(
             # Adjust indices to account for chunk offset
             chunk_indices += chunk_start_patch
 
-            # Update overall results (keep closest neighbors across chunks)
+            # Update overall results
             for j in range(len(batch)):
-                # Combine neighbors across chunks with distance-based sorting
+                # Combine neighbors across chunks
                 combined_distances = np.concatenate((all_distances[i + j], chunk_distances[j]))
                 combined_indices = np.concatenate((all_indices[i + j], chunk_indices[j]))
-                sorted_indices = np.argsort(combined_distances)[:k]  # Keep top-k
+                
+                # Sort based on the metric
+                if metric == 'l2':
+                    # For L2, we want the smallest distances (ascending order)
+                    sorted_indices = np.argsort(combined_distances)[:k]  
+                else:
+                    # For cosine similarity, we want the largest values (descending order)
+                    sorted_indices = np.argsort(-combined_distances)[:k]  
+                
                 all_distances[i + j] = combined_distances[sorted_indices]
                 all_indices[i + j] = combined_indices[sorted_indices]
 
@@ -274,6 +290,276 @@ def compute_unique_source_count(hist):
 
 # ----------- E. Visualization -----------
 
+def create_colored_sources_plot(image, indices, n_train, patch_colors=None, alpha=0.25):
+    """
+    Creates a color-coded patch source map overlay for a generated image.
+
+    Args:
+        image (PIL.Image): The original generated image
+        indices (np.ndarray): Nearest neighbor indices, shape (n_patches,)
+        n_train (int): Total number of training images
+        patch_colors (dict, optional): Dictionary mapping (i,j) patch coordinates to colors
+                                      from the heatmap. If None, uses random colors.
+        alpha (float): Opacity for the overlay colors
+
+    Returns:
+        PIL.Image: Image with colored source overlay
+        np.ndarray: Image source IDs
+    """
+    H, W = image.size
+    # Get patch-level source IDs
+    patch_sources = indices.squeeze()  # Shape: (n_patches,)
+    n_patches = patch_sources.shape[0]
+    patch_size = int(H / n_patches ** 0.5)  # Figure out patch dimensions
+    image_sources = patch_sources // n_patches  # Map patch IDs to image IDs
+
+    # Create overlay
+    image_rgba = image.convert("RGBA")  # Ensure image is in RGBA format for blending
+    overlay = Image.new("RGBA", image_rgba.size)  # Create a blank overlay
+    draw = ImageDraw.Draw(overlay, "RGBA")
+
+    sqrt_n_patches = int(n_patches ** 0.5)
+    for i in range(sqrt_n_patches):
+        for j in range(sqrt_n_patches):
+            patch_idx = i * sqrt_n_patches + j
+            
+            if patch_colors and (i, j) in patch_colors:
+                # Use colors from heatmap if provided
+                color_rgb = patch_colors[(i, j)]
+                color = tuple(int(c * 255) for c in color_rgb) + (int(255 * alpha),)
+            else:
+                # Fall back to random colors based on source IDs
+                normed_source = image_sources[patch_idx] / n_train
+                color_rgb = cm['hsv'](normed_source)[:3]
+                color = tuple(int(c * 255) for c in color_rgb) + (int(255 * alpha),)
+            
+            x0, y0 = j * patch_size, i * patch_size
+            x1, y1 = x0 + patch_size, y0 + patch_size
+            draw.rectangle([x0, y0, x1, y1], fill=color)
+
+    # Blend the overlay with the original image using alpha compositing
+    image_with_overlay = Image.alpha_composite(image_rgba, overlay)
+
+    return image_with_overlay, image_sources
+
+
+def create_patch_reconstruction_grid(indices, train_dataset, H, W):
+    """
+    Creates a grid of nearest neighbor patches from the training dataset.
+
+    Args:
+        indices (np.ndarray): Nearest neighbor indices, shape (n_patches,)
+        image_index (int): Index of the generated image
+        train_dataset: A dataset of training images
+        H, W (int): Height and width of the original image
+
+    Returns:
+        np.ndarray: Grid of nearest neighbor patches
+    """
+    patch_sources = indices.squeeze()  # Shape: (n_patches,)
+    n_patches = patch_sources.shape[0]
+    sqrt_n_patches = int(n_patches ** 0.5)
+    patch_size = H // sqrt_n_patches
+    image_sources = patch_sources // n_patches  # Get corresponding training image IDs
+
+    # Extract patches from training images
+    matched_patches = []
+    for i, train_img_idx in enumerate(image_sources[:n_patches]):  # Limit to grid size
+        train_image = train_dataset[train_img_idx][0].transpose(1, 2, 0)  # Load training image and convert
+        patch_y = (i // sqrt_n_patches) * patch_size
+        patch_x = (i % sqrt_n_patches) * patch_size
+        patch = train_image[patch_y:patch_y + patch_size, patch_x:patch_x + patch_size, :]
+        matched_patches.append(torch.from_numpy(patch).permute(2, 0, 1))  # Convert back to tensor format
+
+    # Create a grid of matched patches
+    patch_grid = make_grid(matched_patches, nrow=sqrt_n_patches, padding=0).numpy()  # (C, H, W)
+
+    return patch_grid.transpose(1, 2, 0)  # Convert to (H, W, C) for display
+
+
+def create_distance_heatmap(distances, image_index, H, W, metric='l2'):
+    """
+    Creates a patch-based heatmap showing the distance/similarity of each patch to its nearest neighbor.
+
+    Args:
+        distances (np.ndarray): Distances/similarities to nearest neighbors, shape (n_gen, n_patches, k)
+        image_index (int): Index of the generated image
+        H, W (int): Height and width of the original image
+        metric (str): Metric used ('l2' or 'cosine')
+
+    Returns:
+        tuple:
+            - np.ndarray: Patch-based heatmap with dimensions (H, W, 3)
+            - dict: Metadata including min/max values and patch colors
+    """
+    dist_values = distances[image_index].squeeze()  # Shape: (n_patches,)
+    n_patches = dist_values.shape[0]
+    sqrt_n_patches = int(n_patches ** 0.5)
+    patch_size = H // sqrt_n_patches
+
+    # Reshape distances to match the spatial layout of patches
+    dist_map = dist_values.reshape(sqrt_n_patches, sqrt_n_patches)
+    
+    # Store original min/max for colorbar labels
+    orig_min = dist_map.min()
+    orig_max = dist_map.max()
+    
+    # Normalize distances for better visualization (always use full range)
+    dist_normalized = (dist_map - dist_map.min()) / (dist_map.max() - dist_map.min() + 1e-8)
+    
+    # For cosine similarity, invert the colormap so that higher values are brighter
+    if metric == 'cosine':
+        # No need to invert since higher cosine similarity is better
+        pass
+    else:  # l2
+        # Invert for L2 so that lower distances (better) are brighter
+        dist_normalized = 1 - dist_normalized
+
+    # Create patch-based heatmap (no interpolation)
+    heatmap = np.zeros((H, W, 3))
+    patch_colors = {}  # Store colors for each patch
+
+    for i in range(sqrt_n_patches):
+        for j in range(sqrt_n_patches):
+            y0, x0 = i * patch_size, j * patch_size
+            y1, x1 = y0 + patch_size, x0 + patch_size
+
+            # Get the normalized distance for this patch
+            distance_value = dist_normalized[i, j]
+
+            # Apply the viridis colormap to this value
+            color = plt.cm.viridis(distance_value)[:3]  # Get RGB values
+            patch_colors[(i, j)] = color
+
+            # Fill the patch with this color
+            heatmap[y0:y1, x0:x1] = color
+
+    metadata = {
+        'min_value': orig_min, 
+        'max_value': orig_max,
+        'patch_colors': patch_colors,
+        'metric': metric,
+        'title': "L2 distance heatmap" if metric == 'l2' else "Cosine similarity heatmap"
+    }
+    
+    return heatmap, metadata
+
+
+def visualize_comprehensive_analysis(image_index, indices, distances, gen_dataset, train_dataset,
+                                     n_train, gen_model, save_dir=None, metric='l2'):
+    """
+    Creates a comprehensive visualization with 5 subplots in the following order:
+    1. Top contributor
+    2. Colored sources plot
+    3. Raw generated image
+    4. Patch reconstruction
+    5. Distance/similarity heatmap
+
+    Args:
+        image_index (int): Index of the generated image
+        indices (np.ndarray): Nearest neighbor indices, shape (n_gen, n_patches, k)
+        distances (np.ndarray): Distances/similarities to nearest neighbors, shape (n_gen, n_patches, k)
+        gen_dataset: Dataset containing generated images
+        train_dataset: Dataset containing training images
+        n_train (int): Number of training images
+        gen_model (str): Name of the generative model
+        save_dir (str, optional): Directory to save the visualization
+        metric (str): Distance metric used ('l2' or 'cosine')
+    """
+    # Get the generated image
+    gen_img_tensor = gen_dataset[image_index][0]
+    gen_img_np = gen_img_tensor.transpose(1, 2, 0)  # (H, W, C)
+    H, W, C = gen_img_np.shape
+
+    # Convert to PIL Image if it's a numpy array
+    if isinstance(gen_img_np, np.ndarray):
+        gen_img = Image.fromarray((gen_img_np * 255).astype(np.uint8) if gen_img_np.max() <= 1.0 else gen_img_np.astype(np.uint8))
+
+    # 1. Extract indices for this specific image
+    image_indices = indices[image_index]
+
+    # 2. Create distance heatmap (do this first to get colors for source plot)
+    dist_heatmap, heatmap_metadata = create_distance_heatmap(distances, image_index, H, W, metric)
+    
+    # 3. Create colored sources overlay using heatmap colors
+    colored_sources, image_sources = create_colored_sources_plot(
+        gen_img, 
+        image_indices, 
+        n_train, 
+        patch_colors=heatmap_metadata['patch_colors']
+    )
+
+    # 4. Get the top contributor
+    bin_count = np.bincount(image_sources, minlength=n_train)
+    top_contributors = bin_count.argsort()[-10:][::-1]  # Get top 10 contributors in descending order
+
+    most_contributing_image_idx = top_contributors[0]
+    most_contributing_image = train_dataset[most_contributing_image_idx][0].transpose(1, 2, 0)  # Get training image
+    if isinstance(most_contributing_image, np.ndarray):
+        if most_contributing_image.max() <= 1.0:
+            most_contributing_image = (most_contributing_image * 255).astype(np.uint8)
+        most_contributing_image = Image.fromarray(most_contributing_image.astype(np.uint8))
+
+    # 5. Create patch reconstruction grid
+    patch_grid = create_patch_reconstruction_grid(image_indices, train_dataset, H, W)
+
+    # Create figure with 5 subplots
+    fig, axes = plt.subplots(1, 5, figsize=(20, 4))
+
+    # Plot 1: Top contributor (now first)
+    axes[0].imshow(most_contributing_image)
+    axes[0].set_title(f"Top Contributor ({bin_count[most_contributing_image_idx]} patches)")
+    axes[0].axis('off')
+
+    # Plot 2: Patch reconstruction
+    axes[1].imshow(patch_grid)
+    axes[1].set_title("Patch Reconstruction")
+    axes[1].axis('off')
+
+    # Plot 3: Raw generated image
+    axes[2].imshow(gen_img)
+    axes[2].set_title("Generated Image")
+    axes[2].axis('off')
+
+    # Plot 4: Colored sources
+    axes[3].imshow(colored_sources)
+    axes[3].set_title("Colored Sources")
+    axes[3].axis('off')
+
+    # Plot 5: Distance/similarity heatmap
+    im = axes[4].imshow(dist_heatmap, cmap='viridis')
+    axes[4].set_title(heatmap_metadata['title'])
+    axes[4].axis('off')
+    
+    # Create colorbar with actual values
+    cbar = plt.colorbar(im, ax=axes[4], fraction=0.046, pad=0.04)
+    if metric == 'l2':
+        # For L2, lower values are better (displayed as brighter)
+        cbar.ax.invert_yaxis()  # Invert colorbar
+    
+    # Set the colorbar labels to show the actual values
+    cbar.set_ticks([0, 0.5, 1])
+    if metric == 'l2':
+        # For L2, show the max at the bottom, min at the top (since we inverted)
+        cbar.set_ticklabels([f"{heatmap_metadata['max_value']:.2f}", 
+                            f"{(heatmap_metadata['min_value'] + heatmap_metadata['max_value'])/2:.2f}", 
+                            f"{heatmap_metadata['min_value']:.2f}"])
+    else:
+        # For cosine, show min at bottom, max at top
+        cbar.set_ticklabels([f"{heatmap_metadata['min_value']:.2f}", 
+                            f"{(heatmap_metadata['min_value'] + heatmap_metadata['max_value'])/2:.2f}", 
+                            f"{heatmap_metadata['max_value']:.2f}"])
+
+    plt.tight_layout()
+
+    # Save if a directory is provided
+    if save_dir:
+        os.makedirs(save_dir, exist_ok=True)
+        save_path = f"{save_dir}/comprehensive_analysis_{gen_model}_id{image_index}.png"
+        plt.savefig(save_path, dpi=200, bbox_inches='tight')
+    plt.close()
+
+
 def visualize_histogram(hist, gen_model, top_k=50, save_dir=None):
     """Visualizes the patch origin histogram, i.e., the counts of how many patches came from each training image.
 
@@ -301,7 +587,6 @@ def visualize_histogram(hist, gen_model, top_k=50, save_dir=None):
     if save_dir:
         save_path = f"{save_dir}/patch_origin_histogram_{gen_model}.png"
         plt.savefig(save_path, dpi=200, bbox_inches='tight')
-        print(f"Saved patch origin histogram to {save_path}")
     plt.show()
 
 
@@ -335,7 +620,6 @@ def visualize_dist_histogram(distances, gen_model, save_dir=None):
     if save_dir:
         save_path = f"{save_dir}/patch_distance_hist_{gen_model}.png"
         plt.savefig(save_path, dpi=200, bbox_inches='tight')
-        print(f"Saved distance histogram to {save_path}")
     plt.show()
 
     # Plot histogram of average distance per generated image
@@ -349,7 +633,6 @@ def visualize_dist_histogram(distances, gen_model, save_dir=None):
     if save_dir:
         save_path = f"{save_dir}/mean_patch_distance_per_sample_{gen_model}.png"
         plt.savefig(save_path, dpi=200, bbox_inches='tight')
-        print(f"Saved average distance per sample histogram to {save_path}")
     plt.show()
 
     return {
@@ -357,137 +640,6 @@ def visualize_dist_histogram(distances, gen_model, save_dir=None):
         "mean_sample_distances": mean_sample_distances,
     }
 
-
-def visualize_patch_sources(image_index, indices, gen_dataset, train_dataset, n_train, gen_model, alpha=0.15, save_dir=None):
-    """
-    Overlay a color-coded patch source map over a generated image.
-
-    Args:
-        image_index (int): Index of the generated image to visualize.
-        indices (np.ndarray): Nearest neighbor indices of shape (n_gen, n_patches, 1).
-        gen_dataset: A dataset object with the generated images returning PIL image or tensor.
-        train_dataset: A dataset object with the training images returning PIL image or tensor.
-        n_train (int): Total number of training images.
-        alpha (float): Opacity for the overlay colors.
-    """
-    image = gen_dataset[image_index][0].transpose(1,2,0)  # discard the label, (H, W, C)
-    H, W, C = image.shape
-    if isinstance(image, np.ndarray):
-        image = Image.fromarray(image)
-
-    # Get patch-level source IDs
-    patch_sources = indices[image_index].squeeze()  # Shape: (n_patches,)
-    n_patches = patch_sources.shape[0]
-    patch_size = int(H / n_patches ** 0.5)  # Figure out patch dimensions within the generated image
-    image_sources = patch_sources // n_patches  # Map patch IDs to image IDs
-
-    # Normalize training IDs to [0, 1] for colormap
-    normed_sources = image_sources / n_train
-    colors = cm['hsv'](normed_sources)[:, :3]  # RGB colors
-
-    # Create overlay
-    image = image.convert("RGBA")  # Ensure image is in RGBA format for blending
-    overlay = Image.new("RGBA", image.size)  # Create a blank overlay
-    draw = ImageDraw.Draw(overlay, "RGBA")
-
-    sqrt_n_patches = int(n_patches ** 0.5)
-    for i in range(sqrt_n_patches):
-        for j in range(sqrt_n_patches):
-            patch_idx = i * sqrt_n_patches + j
-            color = tuple(int(c * 255) for c in colors[patch_idx]) + (int(255 * alpha),)
-            x0, y0 = j * patch_size, i * patch_size
-            x1, y1 = x0 + patch_size, y0 + patch_size
-            draw.rectangle([x0, y0, x1, y1], fill=color)
-
-    # Blend the overlay with the original image using alpha compositing
-    image_with_overlay = Image.alpha_composite(image, overlay)
-
-    # Summarize top contributors
-    bin_count = np.bincount(image_sources, minlength=n_train)
-    top_contributors = bin_count.argsort()[-10:][::-1]  # Get top 10 contributors in descending order
-    # top_contributors_summary = ", ".join(f"{idx}: {bin_count[idx]}" for idx in top_contributors if bin_count[idx] > 0)
-    # print(f"Top patch contributors: {top_contributors_summary}")
-
-    # Get the training image with the most contributions
-    most_contributing_image_idx = top_contributors[0]
-    most_contributing_image = train_dataset[most_contributing_image_idx][0].transpose(1, 2, 0)  # Get training image
-    if isinstance(most_contributing_image, np.ndarray):
-        most_contributing_image = Image.fromarray(most_contributing_image)
-
-    # Side by side: Raw image and colored overlay
-    fig, axes = plt.subplots(1, 3, figsize=(12, 4))
-    for ax, img, title in zip(axes, [image, image_with_overlay, most_contributing_image], ["Generated Image", "Colored Sources", f"Top Contributor ({bin_count[most_contributing_image_idx]})"]):
-        ax.imshow(img)
-        ax.set_title(title)
-        ax.axis('off')
-
-    plt.tight_layout()
-    if save_dir:
-        save_path = f"{save_dir}/colored_sources_{gen_model}_id{image_index}.png"
-        os.makedirs(save_dir, exist_ok=True)
-        plt.savefig(save_path, dpi=200, bbox_inches='tight')
-    plt.close()
-
-
-def visualize_patch_match_grid(image_index, gen_dataset, train_dataset, indices, gen_model, save_dir=None):
-    """
-    Display a generated image and a 14x14 grid of its nearest neighbor patches.
-
-    Args:
-        image_index (int): Index of the generated image.
-        gen_dataset: A dataset of generated images.
-        train_dataset: A dataset of training images.
-        indices (np.ndarray): Nearest neighbor indices, shape (n_gen, n_patches, 1).
-        gen_model: The name of the generative model.
-        save_dir: If provided, saves plots to this directory.
-    """
-    # Get the generated image
-    gen_img = gen_dataset[image_index][0].transpose(1, 2, 0)  # (H, W, C)
-    H, W, C = gen_img.shape
-    if isinstance(gen_img, torch.Tensor):
-        gen_img = TF.to_pil_image(gen_img)
-
-    # Extract nearest neighbor patch indices
-    patch_sources = indices[image_index].squeeze()  # Shape: (n_patches,)
-    n_patches = patch_sources.shape[0]
-    sqrt_n_patches = int(n_patches ** 0.5)
-    patch_size = H // sqrt_n_patches  # Calculate patch size based on generated image size
-    image_sources = patch_sources // n_patches  # Get corresponding training image IDs
-
-    # Extract patches from training images
-    matched_patches = []
-    for i, train_img_idx in enumerate(image_sources[:n_patches]):  # Limit to grid size
-        train_image = train_dataset[train_img_idx][0].transpose(1, 2, 0)  # Load training image and convert
-        y = (i // sqrt_n_patches) * patch_size
-        x = (i % sqrt_n_patches) * patch_size
-        patch = train_image[y:y + patch_size, x:x + patch_size, :]
-        matched_patches.append(torch.from_numpy(patch).permute(2, 0, 1))  # Convert back to tensor format
-
-    # Create a grid of matched patches
-    patch_grid = make_grid(matched_patches, nrow=sqrt_n_patches, padding=0).numpy()  # (C, H, W)
-
-    # Plot side-by-side
-    plt.figure(figsize=(10, 5))
-
-    # Plot generated image
-    plt.subplot(1, 2, 1)
-    plt.imshow(gen_img)
-    plt.title(f"Generated Image {image_index}")
-    plt.axis('off')
-
-    # Plot grid of nearest neighbor patches
-    plt.subplot(1, 2, 2)
-    plt.imshow(patch_grid.transpose(1, 2, 0))
-    plt.title("Nearest Patch Matches")
-    plt.axis('off')
-
-    # Save and show the plot
-    plt.tight_layout()
-    if save_dir:
-        save_path = f"{save_dir}/patch_reconstruction_{gen_model}_id{image_index}.png"
-        os.makedirs(save_dir, exist_ok=True)
-        plt.savefig(save_path, dpi=200, bbox_inches='tight')
-    plt.close()
 
 
 @click.command()
@@ -513,9 +665,10 @@ def main(top_folder, dataset, gen_model, feature_model, load_nns, n_train, n_gen
     path_train = os.path.join(train_dir, sorted(train_files)[-1])  # Take file with highest number
     path_gen = os.path.join(gen_dir, sorted(gen_files)[-1])
 
-    create_index(path_train, n_train, save_dir, metric=metric)  # Creates a bigger index if needed
+    index_func = faiss.IndexFlatL2 if metric == 'l2' else faiss.IndexFlatIP
+    create_index(path_train, n_train, save_dir, index_func=index_func)  # Creates a bigger index if needed
 
-    print(f"\n-- {gen_model} --")
+    print(f"\n-- {metric} {gen_model} --")
     save_path = os.path.join(save_dir, f"{gen_model}/nearest_neighbors_t{n_train}_g{n_gen}.npz")
     if load_nns and not os.path.exists(save_path):
         print(f"--load_nns was True, but no saves for this configuration exist. Recomputing them...")
@@ -535,8 +688,10 @@ def main(top_folder, dataset, gen_model, feature_model, load_nns, n_train, n_gen
             gen_embeds=gen_embeds,
             chunk_dir=os.path.join(save_dir, f"faiss_index"),
             n_train=n_train,
+            index_func=index_func,
             k=1,
             use_gpu=True,
+            metric=metric
         )  # (n_gen, n_patches, 1), (n_gen, n_patches, 1)
 
         os.makedirs(os.path.join(save_dir, gen_model), exist_ok=True)
@@ -548,6 +703,7 @@ def main(top_folder, dataset, gen_model, feature_model, load_nns, n_train, n_gen
                  n_train=n_train,
                  n_gen=gen_embeds.shape[0],
                  model=gen_model,
+                 metric=metric,
                  path_train=path_train,
                  path_gen=path_gen)
 
@@ -567,9 +723,10 @@ def main(top_folder, dataset, gen_model, feature_model, load_nns, n_train, n_gen
     visualize_dist_histogram(distances,
                              gen_model=gen_model,
                              save_dir=f"{results_dir}/{gen_model}")
+    print(f"Saved histograms to {results_dir}")
 
     # Load dataset of generated images
-    gen_dataset_path = f"/home/shared/generative_models/recombination/raw_samples/in64/{gen_model}"
+    gen_dataset_path = f"/home/shared/generative_models/recombination/raw_samples/{dataset}/{gen_model}"
     if "v_vae" in gen_model:
         gen_dataset_path = f"/home/shared/generative_models/recombination/raw_samples/in64/{gen_model}/50000_random_classes{gen_model.split('v_vae')[-1]}.zip"
     print(f'Loading generated dataset from {gen_dataset_path}')
@@ -577,34 +734,32 @@ def main(top_folder, dataset, gen_model, feature_model, load_nns, n_train, n_gen
     gen_dataset_obj = dnnlib.util.construct_class_by_name(**gen_dataset_kwargs)  # subclass of training.dataset.Dataset
 
     # Load dataset of training images
-    train_dataset_path = '/home/shared/DataSets/vision_benchmarks/IN_64x64_karras/imagenet-64x64.zip'
+    if dataset == 'in64':
+        train_dataset_path = '/home/shared/DataSets/vision_benchmarks/IN_64x64_karras/imagenet-64x64.zip'
+    elif dataset == 'in512':
+        train_dataset_path = '/home/shared/DataSets/vision_benchmarks/IN_512x512_karras/img512.zip'
     print(f'Loading training dataset from {train_dataset_path}')
     train_dataset_kwargs = dnnlib.EasyDict(class_name='dataset.ImageFolderDataset', path=train_dataset_path, max_size=n_train)
     train_dataset_obj = dnnlib.util.construct_class_by_name(**train_dataset_kwargs)
 
-    for idx in range(64):
-        visualize_patch_sources(image_index=idx,
-                                indices=indices,
-                                gen_dataset=gen_dataset_obj,
-                                train_dataset=train_dataset_obj,
-                                n_train=n_train,
-                                gen_model=gen_model,
-                                save_dir=f"{results_dir}/{gen_model}/colored_sources")
-
-        visualize_patch_match_grid(image_index=idx,
-                                   gen_dataset=gen_dataset_obj,
-                                   train_dataset=train_dataset_obj,
-                                   indices=indices,
-                                   gen_model=gen_model,
-                                   save_dir=f"{results_dir}/{gen_model}/patch_reconstructions")
-    print(f"Saved colored source visualizations to {f'{results_dir}/{gen_model}/colored_sources/'}")
-    print(f"Saved patch reconstruction visualizations to {f'{results_dir}/{gen_model}/colored_sources/'}")
+    for idx in tqdm(range(64), desc=f"Visual analysis"):
+        visualize_comprehensive_analysis(image_index=idx,
+                                         indices=indices,
+                                         distances=distances,
+                                         gen_dataset=gen_dataset_obj,
+                                         train_dataset=train_dataset_obj,
+                                         n_train=n_train,
+                                         gen_model=gen_model,
+                                         save_dir=f"{results_dir}/{gen_model}/comprehensive_analysis",
+                                         metric=metric)
+    print(f"Saved comprehensive analysis visualizations to {f'{results_dir}/{gen_model}/comprehensive_analysis/'}")
 
     metrics_dict = {"nearest_neighbors_indices": indices,
                     "nearest_neighbors_distances": distances,
                     "patch_origin_histogram": hist,
                     "patch_origin_entropy": ent,
-                    "unique_source_count": uniq}
+                    "unique_source_count": uniq,
+                    "metric": metric}
     torch.save(metrics_dict, f'{results_dir}/{gen_model}/metrics_results.pt')
 
 
