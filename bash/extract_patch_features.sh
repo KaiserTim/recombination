@@ -1,33 +1,32 @@
 #!/bin/bash
-conda activate edm
 
 dataset='in512'
-feature_model='dinov2'  # swav or dinov2
+feature_model='lpips-alex'  # Options: swav, dinov2, lpips-alex, lpips-vgg, lpips-squeeze
 top_folder="/home/shared/generative_models/recombination"
 
-for factor in 100 200 300 400 500 600 700 800 900 1000 ; do
-  for n_patches in 16 ; do
-    # Train
-    python extract_patch_features.py \
-      --feature_model $feature_model \
-      --dataset $dataset \
-      --n_patches $n_patches \
-      --outdir "${top_folder}/embeddings/${dataset}/${feature_model}-np${n_patches}/train" \
-      --max_size $(( $factor * 1024 )) ;
-  done
-done
-
-## EDM2
-##for gen_model in 'edm2-img64-xl-0671088' ; do # IN64: 'edm2-img64-xs-2147483' 'edm2-img64-s-1073741' 'edm2-img64-m-2147483' 'edm2-img64-l-1073741'
-#for gen_model in 'edm2-img512-xl-1342177' ; do # IN512: 'edm2-img512-xs-2147483' 'edm2-img512-s-2147483' 'edm2-img512-m-2147483' 'edm2-img512-l-1879048' 'edm2-img512-xl-1342177'
-#  gen_model_folder "${top_folder}/raw_samples/${dataset}/${gen_model}"
-#  python extract_patch_features.py \
-#    --feature_model $feature_model \
-#    --dataset $gen_model_folder \
-#    --n_patches $n_patches \
-#    --outdir "${top_folder}/embeddings/${dataset}/${feature_model}-np${n_patches}/${gen_model}" \
-#    --max_size $(( 5 * 1024 )) ;
+#for factor in 100 ; do
+#  for n_patches in 16 ; do
+#    # Train
+#    python extract_patch_features.py \
+#      --feature_model $feature_model \
+#      --dataset $dataset \
+#      --n_patches $n_patches \
+#      --outdir "${top_folder}/embeddings/${dataset}/${feature_model}-np${n_patches}/train" \
+#      --max_size $(( $factor * 1024 )) ;
+#  done
 #done
+
+# EDM2
+#for gen_model in 'edm2-img64-xl-0671088' ; do # IN64: 'edm2-img64-xs-2147483' 'edm2-img64-s-1073741' 'edm2-img64-m-2147483' 'edm2-img64-l-1073741'
+for gen_model in 'edm2-img512-xl-1342177' ; do # IN512: 'edm2-img512-xs-2147483' 'edm2-img512-s-2147483' 'edm2-img512-m-2147483' 'edm2-img512-l-1879048' 'edm2-img512-xl-1342177'
+  gen_model_folder="${top_folder}/raw_samples/${dataset}/${gen_model}"
+  python extract_patch_features.py \
+    --feature_model $feature_model \
+    --dataset $gen_model_folder \
+    --n_patches $n_patches \
+    --outdir "${top_folder}/embeddings/${dataset}/${feature_model}-np${n_patches}/${gen_model}" \
+    --max_size $(( 5 * 1024 )) ;
+done
 
 ## Visual-VAE
 #python extract_patch_features.py \

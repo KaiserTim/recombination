@@ -1,0 +1,12 @@
+torch~=2.7.0
+torchvision~=0.22.0
+lpips~=0.1.4
+tqdm~=4.67.1
+click~=8.2.1
+faiss-gpu
+matplotlib
+numpy~=1.26.4
+scipy~=1.15.3
+Pillow~=11.2.1
+scikit-learn
+requests~=2.32.3

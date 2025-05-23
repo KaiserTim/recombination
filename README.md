@@ -99,6 +99,8 @@ Results still don't make sense, with nearest neighbor patches seemingly not rese
 
 ## Problems/Limitations
 
+### TODO: Major problem here is that comparing patches instead of images is an unnatural usecase, few networks have been trained this way. This always leaves the problematic tradeoff between matching a models inductive bias (object scale vs resolution) and having big enough patches for the network to process meaningfully.
+
 ### Model Performance Disparities
 - EDM2 has vastly superior generative performance (FID/FDD) compared to VAEs, which biases nearest neighbor results
 - Both NN distance (due to better image quality) and patch origin entropy (due to better distribution coverage) are affected
