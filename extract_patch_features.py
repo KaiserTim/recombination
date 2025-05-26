@@ -61,12 +61,11 @@ def extract_features(f_extractor, data_loader, n_patches, resize_size, size, tqd
     assert n_patches ** 0.5 % 1 == 0, f"n_patches must be a perfect square. Got {n_patches}"
     batch_size = data_loader.batch_size
     full_size = int(size // batch_size) * batch_size if size % batch_size != 0 else size
-
+    img, _ = next(iter(data_loader))
+    bs, C, H, W = img.shape
+    patch_size = int(H // n_patches ** 0.5)
     if 'lpips' in f_extractor.model_name:
         # Need to figure out f_dim, as it depends on the input size
-        img, _ = next(iter(data_loader))
-        bs, C, H, W = img.shape
-        patch_size = int(H // n_patches ** 0.5)
         test_in = torch.zeros(1, C, patch_size, patch_size, device=device)
         f_extractor.f_dim = f_extractor.get_features(test_in).shape[1]  # (bs, f_dim)
         dist.print0(f'LPIPS feature-dimension is {f_extractor.f_dim}')
@@ -82,16 +81,28 @@ def extract_features(f_extractor, data_loader, n_patches, resize_size, size, tqd
             arr[:num_features] = existing_features
             starting_batch = num_features // batch_size
 
-    def transforms(x, feature_model):
-        """Apply ImageNet normalization"""
-        x = torch.nn.functional.interpolate(x.to(torch.float32), size=(resize_size, resize_size), mode='bicubic', antialias=True)
-
+    def image_transforms(x, feature_model):
+        """Apply image transformations, based on the feature extractor"""
         if 'lpips' in feature_model:
             x = x - misc.const_like(x, [0.5, 0.5, 0.5]).reshape(1, -1, 1, 1)
             x = x / misc.const_like(x, [0.5, 0.5, 0.5]).reshape(1, -1, 1, 1)
-        else:
+        elif feature_model == 'dinov2':
+            x = torch.nn.functional.interpolate(x.to(torch.float32), size=(resize_size, resize_size), mode='bicubic', antialias=True)
             x = x - misc.const_like(x, [0.485, 0.456, 0.406]).reshape(1, -1, 1, 1)
             x = x / misc.const_like(x, [0.229, 0.224, 0.225]).reshape(1, -1, 1, 1)
+        elif feature_model == 'swav':  # SwAV gets resized after patching
+            x = x - misc.const_like(x, [0.485, 0.456, 0.406]).reshape(1, -1, 1, 1)
+            x = x / misc.const_like(x, [0.229, 0.224, 0.225]).reshape(1, -1, 1, 1)
+        return x
+
+    def patch_transforms(x, feature_model):
+        """Apply patch transformations, based on the feature extractor"""
+        if 'lpips' in feature_model:
+            x = torch.nn.functional.interpolate(x.to(torch.float32), size=(resize_size, resize_size), mode='bicubic', antialias=True)
+        elif feature_model == 'swav':
+            x = torch.nn.functional.interpolate(x.to(torch.float32), size=(resize_size, resize_size), mode='bicubic', antialias=True)
+        elif feature_model == 'dinov2':
+            pass
         return x
 
     last_saved_file = None
@@ -104,13 +115,14 @@ def extract_features(f_extractor, data_loader, n_patches, resize_size, size, tqd
         img = img.to(device).to(torch.float32)
         img = img / 255 if img.max() > 1 else img # Check if images are in [0, 255] or [0,1] and adjust if needed
         assert img.min() >= 0 and img.max() <= 1, f'Input range is not in [0,1]. Min: {img.min()}, Max: {img.max()}'
-        img = transforms(img, f_extractor.model_name)
+        img = image_transforms(img, f_extractor.model_name)
         feats = []
 
         # For each patch in the image
         for j in range(0, H, patch_size):
             for k in range(0, W, patch_size):
                 patch = img[:, :, j:j + patch_size, k:k + patch_size]
+                patch = patch_transforms(patch, f_extractor.model_name)
                 
                 # Extract features for the current patch
                 out = f_extractor.get_features(patch).to(torch.float16)  # (bs, f_dim)
@@ -212,13 +224,13 @@ def main(feature_model, dataset, batch_gpu, max_size, outdir, n_patches, save_in
     dataset_obj = dnnlib.util.construct_class_by_name(**dataset_kwargs)  # subclass of training.dataset.Dataset
     dataset_loader = torch.utils.data.DataLoader(dataset=dataset_obj, batch_size=batch_gpu, **data_loader_kwargs)
 
-    # Set appropriate resize resolution based on feature model
+    # Set appropriate resize resolution based on feature model, to be applied before patching
     if feature_model == 'dinov2':
-        resize_size = 448  # divisible by 14 and powers of 2, so that e.g. 16 or 64 patches result in patch sizes divisible by 14
+        resize_size = 448  # applied before patching, divisible by 14 and powers of 2, so that e.g. 16 or 64 patches result in patch sizes divisible by 14
     elif feature_model == 'swav':
-        resize_size = 224  # native resolution for swav, matches the inductive bias of the model w.r.t. object scale
+        resize_size = 224  # model expects 224 resized patches
     elif 'lpips' in feature_model or feature_model == 'dists':
-        resize_size = 512  # Higher resolution for perceptual metrics
+        resize_size = 224  # model expects 224 resized patches
 
     # Extract features
     dist.print0(f'Extracting features with {feature_model} for {n_imgs} images with {n_patches} patches per image')
