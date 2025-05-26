@@ -130,12 +130,17 @@ def extract_features(f_extractor, data_loader, n_patches, resize_size, size, tqd
             if not os.path.exists(outdir):
                 os.makedirs(outdir)
             save_path = os.path.join(outdir, f'features_{current_count:08d}.pt')
-            
+
             # Save the new file
-            torch.save(arr[:current_count], save_path)
-            
+            try:
+                torch.save(arr[:current_count], save_path)
+                save_successful = True
+            except Exception as e:
+                dist.print0(f'Error saving file {save_path}: {e}')
+                save_successful = False
+
             # Clean up previous feature files only after a successful save
-            if save_path != last_saved_file:  # Ensure we're not deleting the file we just saved
+            if save_successful and save_path != last_saved_file:  # Ensure we're not deleting the file we just saved
                 all_feature_files = get_all_feature_files(outdir)
                 for file_path, _ in all_feature_files:
                     # Keep the file we just saved, delete all others
@@ -199,6 +204,7 @@ def main(feature_model, dataset, batch_gpu, max_size, outdir, n_patches, save_in
     # Check if we have an existing file to ensure max_size is respected
     latest_file, num_features = find_latest_feature_file(outdir)
     if latest_file is not None:
+        print(outdir, n_imgs, num_features, max_size)
         assert num_features <= n_imgs, f"Found existing feature file with {num_features} features, but max_size is {n_imgs}. Increase max_size to continue."
 
     dataset_kwargs = dnnlib.EasyDict(class_name='dataset.ImageFolderDataset', path=dataset_path, max_size=max_size)

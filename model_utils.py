@@ -102,17 +102,12 @@ class LPIPSFeatures(nn.Module):
 
         weighted_features = []
         for i, feat in enumerate(features):
-            norm = feat.pow(2).mean(dim=1, keepdim=True).pow(0.5)
+            norm = feat.pow(2).sum(dim=1, keepdim=True).pow(0.5)
             normalized_feat = feat / (norm + 1e-10)  # Add small epsilon to avoid division by zero
-            weighted_feature = normalized_feat * all_weights[i][None, :, None, None] ** 0.5
+            avg_feat = normalized_feat.mean(dim=(2,3))  # Apply global average pooling to each feature map, as we don't need spatial information
+            weighted_feature = avg_feat * all_weights[i][None, :] ** 0.5  # Weight is now inside the L2-square
             weighted_features.append(weighted_feature)
 
-        for i, feat in enumerate(weighted_features):  # For a 112x112 patch with AlexNet the dims are 31, 15, 7, 7, 7
-            if feat.shape[2] > 12:
-                downsample_factor = 4
-            else:
-                downsample_factor = 2
-            weighted_features[i] = F.avg_pool2d(feat, kernel_size=downsample_factor, stride=downsample_factor, padding=0)
         return torch.cat([f.flatten(start_dim=1) for f in weighted_features], dim=1)  # Create a single feature vector
 
 

@@ -13,19 +13,14 @@ Examine patch embeddings of generated images by comparing them to the patch embe
    - Comparative Model: Visual-VAE on IN64 (limited by VAE capability for high-resolution generation)
    - Feature Extractors: Both DINOv2 (ViT-L/14) and SwAV with different patch configurations
 
-2. **Extract patch embeddings:**
-   - Using extract_patch_features.py to process both training and generated images
-   - Results in tensors of shape (n_images, n_patches, embedding_dimension)
-   - For different configurations: 16 patches (4x4 grid) or 64 patches (8x8 grid)
-   - Scale up to processing 50K-1M training images and 1K generated images
+2. **Extract patch embeddings** from training and generated images, resulting in tensors of shape (n_images, n_patches, embedding_dimension) 
+for different configurations: 16 patches (4x4 grid) or 64 patches (8x8 grid)
 
-3. **Run nearest neighbor search:**
-   - Use FAISS library to efficiently perform GPU-accelerated similarity search
-   - Process generative embeddings batch-wise against training embeddings
-   - Compute matches using both L2 distance and cosine similarity metrics
-   - Store "indices" and "distances" tensors containing the nearest training patch for each generated patch
+3. **Run nearest neighbor search** using the FAISS library to efficiently perform GPU-accelerated similarity search.
+Process generative embeddings batch-wise against training embeddings using both L2 distance and cosine similarity metrics. 
+Store "indices" and "distances" tensors containing the nearest training patch for each generated patch.
 
-4. **Analyze and visualize results using experiments.py script**
+4. **Analyze and visualize results**
 
 ## Evaluations
 
@@ -57,6 +52,13 @@ This script extracts patch-level embeddings from both training and generated ima
 - Supports checkpoint saving for resuming large extraction jobs
 - Scales to handle datasets with millions of images
 
+### extract_patch_features.sh
+Automates feature extraction across multiple configurations:
+- Processes training datasets in batches (100K-1M images)
+- Configures different patch counts (16, 64)
+- Supports both feature extractors (SwAV, DINOv2)
+- Handles both training and generated images
+
 ### experiments.py
 This script runs analysis and visualizations on the extracted patch embeddings. It:
 - Loads extracted features from both training and generated images
@@ -65,15 +67,6 @@ This script runs analysis and visualizations on the extracted patch embeddings. 
 - Calculates statistical metrics (entropy, unique counts, distances)
 - Generates visualizations of patch origins and replacements
 - Supports different distance metrics (L2, cosine)
-
-### Bash Scripts
-
-#### extract_patch_features.sh
-Automates feature extraction across multiple configurations:
-- Processes training datasets in batches (100K-1M images)
-- Configures different patch counts (16, 64)
-- Supports both feature extractors (SwAV, DINOv2)
-- Handles both training and generated images
 
 #### experiments.sh
 Automates the analysis pipeline:
@@ -86,33 +79,19 @@ The patch origin histogram and patch origin entropy show that EDM uses a larger 
 The distance histogram shows a stark difference between the models, with EDM having much closer matches, overall and on average. This could be explained by memorization or the superior image quality of EDM.
 The per-sample visualization don't give any evidence here.
 
-## Follow-up
-
-### Changes
-Implemented SwAV as feature detector, because I need something that can:
-1. Process patches independently, without contextualizing them with the rest of the image 
-2. Use a model whose inductive bias allows it to embed patches, i.e. very local crops of an image, without seeing the rest of the image
-
-Increased patch size to 16x16 and 8x8, resulting in 16 and 64 patches each. This reduces computational cost greatly and allowed for 100k instead of 25k training images.
-
-Results still don't make sense, with nearest neighbor patches seemingly not resembling each other. Entropy is almost constant across models and visualizations don't show any interpretable results.
-
 ## Problems/Limitations
 
-### TODO: Major problem here is that comparing patches instead of images is an unnatural usecase, few networks have been trained this way. This always leaves the problematic tradeoff between matching a models inductive bias (object scale vs resolution) and having big enough patches for the network to process meaningfully.
-
 ### Model Performance Disparities
-- EDM2 has vastly superior generative performance (FID/FDD) compared to VAEs, which biases nearest neighbor results
-- Both NN distance (due to better image quality) and patch origin entropy (due to better distribution coverage) are affected
-- Finding evenly matched models is challenging, as few VAEs can match diffusion model performance at high resolutions
-- Assumption of interpolation-style generalization in VAEs is crucial for comparing generalization mechanisms
+EDM2 has vastly superior generative performance (FID/FDD) compared to VAEs, which biases nearest neighbor results. 
+Both NN distance (due to better image quality) and patch origin entropy (due to better distribution coverage) are affected by this. 
+Finding evenly matched models is challenging, as few VAEs can match diffusion model performance at high resolutions. 
+The assumption of interpolation-style generalization in VAEs is crucial for comparing generalization mechanisms, leaving no other choices.
 
-### Patch Size and Resolution Issues
-- Working with 16 or 64 patches per image results in very small patches, especially at lower resolutions
-- On IN64, 4x4 patches are too small to capture meaningful patterns beyond micro-textures
-- Upscaling small patches (e.g., 16x16 or 8x8) to 224x224 for feature extraction creates artifacts
-- Feature extractors' inductive biases don't align with such small patches (SwAV was trained on crops ≥96x96)
-- Moving to IN512 helps with patch size issues but introduces storage and computation challenges
+### Matching image or patch to model scale
+Working with 16 or 64 patches per image results in very small patches, especially at lower resolutions, which networks have never seen during training.
+Upscaling each patch to the "native" image resolution fixes that, but presents an unnatural image-scale to the network, that it also has never seen during training.
+This always leaves the problematic tradeoff between matching a models inductive bias (scaling the entire image) and matching a models' expected image scale (scaling the patches).
+Additionally, upscaling from small image resolutions, e.g. on IN64, introduces upscaling artifacts.
 
 ### Feature Extraction Limitations
 - DINOv2 contextualizes patches with the entire image, biasing the search for "reused" patches
@@ -134,3 +113,40 @@ Results still don't make sense, with nearest neighbor patches seemingly not rese
 - Extract features from middle layers that may better represent textures and patterns
 - Implement chunked file reading to handle large zip files without I/O errors
 - Compare models of similar generative quality to isolate recombination effects from quality differences
+
+## Outlook
+There appears to be a fundamental conceptual issue with the approach. The lack of meaningful matches across multiple feature extractors and distance metrics suggests a deeper problem:
+
+1. **The Recombination Hypothesis Itself**:
+   - The hypothesis assumes that diffusion models reuse "patterns" from training data
+   - However, the concept of a "pattern" might be more abstract than literal pixel-level or feature-level copying
+   - The model might be learning to generate similar statistical properties rather than reusing exact patches
+
+2. **Scale of Patterns**:
+   - The current approach assumes patterns exist at the patch level
+   - However, the meaningful patterns might exist at multiple scales simultaneously
+   - A patch-based approach might be too rigid to capture this multi-scale nature
+
+3. **Feature Space vs. Generation Space**:
+   - We're trying to find similarities in feature space (LPIPS, DINOv2, SwAV)
+   - But the diffusion model operates in pixel space and noise space
+   - The features we're comparing might not represent the space where actual pattern reuse occurs
+
+Alternative approaches to investigate the hypothesis could include:
+
+1. **Distribution Analysis**:
+   - Instead of looking for exact matches, analyze the distribution of features
+   - Compare the statistical properties of patches between generated and training images
+   - This could reveal if the model is maintaining similar statistics without exact copying
+
+2. **Hierarchical Analysis**:
+   - Look at patterns at multiple scales simultaneously
+   - Use feature pyramids or hierarchical representations
+   - This could capture both local textures and larger structural patterns
+
+3. **Latent Space Analysis**:
+   - Study the model's internal representations during generation
+   - Analyze how the denoising process builds up patterns
+   - This might reveal more about how the model actually constructs images
+
+The current approach might be too literal in its search for pattern reuse, when the reality of how diffusion models generalize could be more subtle and statistical in nature.
