@@ -1,33 +1,42 @@
 #!/bin/bash
 
-dataset='in512'
+resolution=512
 feature_model='lpips-vgg'  # Options: swav, dinov2, lpips-alex, lpips-vgg, lpips-squeeze
 top_folder="/home/shared/generative_models/recombination"
+for resolution in 512 64 ; do
+  dataset="in${resolution}"
+  if [[ "$resolution" == 512 ]]; then
+    feature_models='dinov2 swav'
+  else
+    feature_models='dinov2 swav lpips-vgg'
+  fi
+  for feature_model in $feature_models ; do
+    for n_patches in 16 ; do
+      for factor in 500 ; do
+        # Train
+        python extract_patch_features.py \
+          --feature_model $feature_model \
+          --dataset $dataset \
+          --resolution $resolution \
+          --n_patches $n_patches \
+          --outdir "${top_folder}/embeddings/${dataset}/${feature_model}-np${n_patches}/train" \
+          --max_size $(( $factor * 1024 )) ;
+      done
 
-for feature_model in 'swav' 'lpips-alex' ; do
-  for n_patches in 16 ; do
-    for factor in 100 200 300 400 500 ; do
-      # Train
+    # EDM2
+    #for gen_model in 'edm2-img64-xl-0671088' ; do # IN64: 'edm2-img64-xs-2147483' 'edm2-img64-s-1073741' 'edm2-img64-m-2147483' 'edm2-img64-l-1073741'
+    for gen_model in 'edm2-img512-xl-1342177' ; do # IN512: 'edm2-img512-xs-2147483' 'edm2-img512-s-2147483' 'edm2-img512-m-2147483' 'edm2-img512-l-1879048' 'edm2-img512-xl-1342177'
+      gen_model_folder="${top_folder}/raw_samples/${dataset}/${gen_model}"
       python extract_patch_features.py \
         --feature_model $feature_model \
-        --dataset $dataset \
+        --dataset $gen_model_folder \
+        --resolution $resolution \
         --n_patches $n_patches \
-        --outdir "${top_folder}/embeddings/${dataset}/${feature_model}-np${n_patches}/train" \
-        --max_size $(( $factor * 1024 )) ;
+        --outdir "${top_folder}/embeddings/${dataset}/${feature_model}-np${n_patches}/${gen_model}" \
+        --max_size $(( 5 * 1024 )) ;
     done
-
-  # EDM2
-  #for gen_model in 'edm2-img64-xl-0671088' ; do # IN64: 'edm2-img64-xs-2147483' 'edm2-img64-s-1073741' 'edm2-img64-m-2147483' 'edm2-img64-l-1073741'
-  for gen_model in 'edm2-img512-xl-1342177' ; do # IN512: 'edm2-img512-xs-2147483' 'edm2-img512-s-2147483' 'edm2-img512-m-2147483' 'edm2-img512-l-1879048' 'edm2-img512-xl-1342177'
-    gen_model_folder="${top_folder}/raw_samples/${dataset}/${gen_model}"
-    python extract_patch_features.py \
-      --feature_model $feature_model \
-      --dataset $gen_model_folder \
-      --n_patches $n_patches \
-      --outdir "${top_folder}/embeddings/${dataset}/${feature_model}-np${n_patches}/${gen_model}" \
-      --max_size $(( 5 * 1024 )) ;
+   done
   done
- done
 done
 
   ## Visual-VAE

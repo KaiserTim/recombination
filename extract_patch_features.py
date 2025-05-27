@@ -63,6 +63,8 @@ def extract_features(f_extractor, data_loader, n_patches, resize_size, size, tqd
     full_size = int(size // batch_size) * batch_size if size % batch_size != 0 else size
     img, _ = next(iter(data_loader))
     bs, C, H, W = img.shape
+    if f_extractor.model_name == 'dinov2':
+        H, W = resize_size, resize_size
     patch_size = int(H // n_patches ** 0.5)
     if 'lpips' in f_extractor.model_name:
         # Need to figure out f_dim, as it depends on the input size
@@ -193,13 +195,14 @@ def get_dataset_path(dataset):
 
 @click.command()
 @click.option('--feature_model', type=click.Choice(['dinov2', 'swav', 'lpips-alex', 'lpips-vgg', 'lpips-squeeze', 'dists']), required=True)
-@click.option('--dataset', type=str, default='in64', required=True, help='Dataset Name or Folder Path')
+@click.option('--dataset', type=str, required=True, help='Dataset Name or Folder Path.')
+@click.option('--resolution', type=int, help="Image resolution per dimension.")
 @click.option('--batch_gpu', type=int, default=512)
 @click.option('--max_size', type=int, default=0, help='Artificially limit the size of the dataset. 0 = no limit.')
 @click.option('--outdir', type=str, required=True)
 @click.option('--n_patches', type=int, default=16, help='Number of patches to extract from each image.')
-@click.option('--save_interval', type=int, default=5120*2, help='Save intermediate results every N images')
-def main(feature_model, dataset, batch_gpu, max_size, outdir, n_patches, save_interval):
+@click.option('--save_interval', type=int, default=5120, help='Save intermediate results every N images')
+def main(feature_model, resolution, dataset, batch_gpu, max_size, outdir, n_patches, save_interval):
     device = 'cuda'
     
     # Initialize feature extractor with appropriate model
@@ -216,7 +219,6 @@ def main(feature_model, dataset, batch_gpu, max_size, outdir, n_patches, save_in
     # Check if we have an existing file to ensure max_size is respected
     latest_file, num_features = find_latest_feature_file(outdir)
     if latest_file is not None:
-        print(outdir, n_imgs, num_features, max_size)
         assert num_features <= n_imgs, f"Found existing feature file with {num_features} features, but max_size is {n_imgs}. Increase max_size to continue."
 
     dataset_kwargs = dnnlib.EasyDict(class_name='dataset.ImageFolderDataset', path=dataset_path, max_size=max_size)
@@ -226,7 +228,7 @@ def main(feature_model, dataset, batch_gpu, max_size, outdir, n_patches, save_in
 
     # Set appropriate resize resolution based on feature model, to be applied before patching
     if feature_model == 'dinov2':
-        resize_size = 448  # applied before patching, divisible by 14 and powers of 2, so that e.g. 16 or 64 patches result in patch sizes divisible by 14
+        resize_size = 448 if resolution == 512 else 224  # applied before patching, divisible by 14 and powers of 2, so that e.g. 16 or 64 patches result in patch sizes divisible by 14
     elif feature_model == 'swav':
         resize_size = 224  # model expects 224 resized patches
     elif 'lpips' in feature_model or feature_model == 'dists':

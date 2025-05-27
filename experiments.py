@@ -331,37 +331,75 @@ def create_colored_sources_plot(image, indices, n_train, alpha=0.35):
     return image_with_overlay, image_sources
 
 
-def create_patch_reconstruction_grid(indices, train_dataset, H):
+def create_patch_reconstruction_grid(image_indices, train_dataset, H):
     """
-    Creates a grid of nearest neighbor patches from the training dataset.
+    Creates a reconstruction using patches from training images based on nearest neighbor search results.
 
     Args:
-        indices (np.ndarray): Nearest neighbor indices, shape (n_patches,)
-        train_dataset: A dataset of training images
-        H, W (int): Height and width of the original image
+        image_indices (np.ndarray): Nearest neighbor indices for this image, shape (n_patches,)
+        train_dataset: Dataset containing training images
 
     Returns:
-        np.ndarray: Grid of nearest neighbor patches
+        np.ndarray: Reconstructed image using nearest neighbor patches [H,W,C]
     """
-    patch_sources = indices.squeeze()  # Shape: (n_patches,)
+    patch_sources = image_indices.squeeze()  # Shape: (n_patches,)
     n_patches = patch_sources.shape[0]
     sqrt_n_patches = int(n_patches ** 0.5)
     patch_size = H // sqrt_n_patches
-    image_sources = patch_sources // n_patches  # Get corresponding training image IDs
 
-    # Extract patches from training images
-    matched_patches = []
-    for i, train_img_idx in enumerate(image_sources[:n_patches]):  # Limit to grid size
-        train_image = train_dataset[train_img_idx][0].transpose(1, 2, 0)  # Load training image and convert
-        patch_y = (i // sqrt_n_patches) * patch_size
-        patch_x = (i % sqrt_n_patches) * patch_size
-        patch = train_image[patch_y:patch_y + patch_size, patch_x:patch_x + patch_size, :]
-        matched_patches.append(torch.from_numpy(patch).permute(2, 0, 1))  # Convert back to tensor format
+    # Extract source image indices and patch positions
+    image_sources = patch_sources // n_patches
+    patch_positions = patch_sources % n_patches
 
-    # Create a grid of matched patches
-    patch_grid = make_grid(matched_patches, nrow=sqrt_n_patches, padding=0).numpy()  # (C, H, W)
+    # Collect all patches
+    patches = []
+    for i in range(n_patches):
+        # Get source training image
+        train_image = train_dataset[image_sources[i]][0]  # Already in [C,H,W] format
 
-    return patch_grid.transpose(1, 2, 0)  # Convert to (H, W, C) for display
+        # Calculate source patch position
+        source_y = (patch_positions[i] // sqrt_n_patches) * patch_size
+        source_x = (patch_positions[i] % sqrt_n_patches) * patch_size
+
+        # Extract the matching patch
+        patch = torch.from_numpy(train_image[:, source_y:source_y + patch_size, source_x:source_x + patch_size])
+        patches.append(patch)
+
+    # Stack patches and arrange in grid
+    return make_grid(torch.stack(patches), nrow=sqrt_n_patches, padding=0).permute(1, 2, 0).numpy()
+
+
+# def create_patch_reconstruction_grid(indices, train_dataset, H):
+#     """
+#     Creates a grid of nearest neighbor patches from the training dataset.
+#
+#     Args:
+#         indices (np.ndarray): Nearest neighbor indices, shape (n_patches,)
+#         train_dataset: A dataset of training images
+#         H, W (int): Height and width of the original image
+#
+#     Returns:
+#         np.ndarray: Grid of nearest neighbor patches
+#     """
+#     patch_sources = indices.squeeze()  # Shape: (n_patches,)
+#     n_patches = patch_sources.shape[0]
+#     sqrt_n_patches = int(n_patches ** 0.5)
+#     patch_size = H // sqrt_n_patches
+#     image_sources = patch_sources // n_patches  # Get corresponding training image IDs
+#
+#     # Extract patches from training images
+#     matched_patches = []
+#     for i, train_img_idx in enumerate(image_sources[:n_patches]):  # Limit to grid size
+#         train_image = train_dataset[train_img_idx][0].transpose(1, 2, 0)  # Load training image and convert
+#         patch_y = (i // sqrt_n_patches) * patch_size
+#         patch_x = (i % sqrt_n_patches) * patch_size
+#         patch = train_image[patch_y:patch_y + patch_size, patch_x:patch_x + patch_size, :]
+#         matched_patches.append(torch.from_numpy(patch).permute(2, 0, 1))  # Convert back to tensor format
+#
+#     # Create a grid of matched patches
+#     patch_grid = make_grid(matched_patches, nrow=sqrt_n_patches, padding=0).numpy()  # (C, H, W)
+#
+#     return patch_grid.transpose(1, 2, 0)  # Convert to (H, W, C) for display
 
 
 def create_distance_heatmap(distances, image_index, H, W, metric='l2'):
@@ -526,9 +564,9 @@ def visualize_comprehensive_analysis(image_index, indices, distances, gen_datase
     cbar.set_ticks([0, 0.5, 1])
     if metric == 'l2':
         # For L2, show the max at the bottom, min at the top (since we inverted)
-        cbar.set_ticklabels([f"{heatmap_metadata['max_value']:.2f}", 
-                            f"{(heatmap_metadata['min_value'] + heatmap_metadata['max_value'])/2:.2f}", 
-                            f"{heatmap_metadata['min_value']:.2f}"])
+        cbar.set_ticklabels([f"{heatmap_metadata['max_value']:.1e}",
+                            f"{(heatmap_metadata['min_value'] + heatmap_metadata['max_value'])/2:.1e}",
+                            f"{heatmap_metadata['min_value']:.1e}"])
     else:
         # For cosine, show min at bottom, max at top
         cbar.set_ticklabels([f"{heatmap_metadata['min_value']:.2f}", 
@@ -727,7 +765,6 @@ def main(top_folder, dataset, gen_model, feature_model, load_nns, n_train, n_gen
     print(f'Loading generated dataset from {gen_dataset_path}')
     gen_dataset_kwargs = dnnlib.EasyDict(class_name='dataset.ImageFolderDataset', path=gen_dataset_path, max_size=n_gen)
     gen_dataset_obj = dnnlib.util.construct_class_by_name(**gen_dataset_kwargs)  # subclass of training.dataset.Dataset
-
     # Load dataset of training images
     if dataset == 'in64':
         train_dataset_path = '/home/shared/DataSets/vision_benchmarks/IN_64x64_karras/imagenet-64x64.zip'

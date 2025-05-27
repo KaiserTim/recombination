@@ -41,7 +41,7 @@ class Dataset(torch.utils.data.Dataset):
         random_seed = 0,        # Random seed to use when applying max_size.
         cache       = False,    # Cache images in CPU memory?
         subclass    = -1,       # Subclass to select from data.
-        shuffle_subset = True,  # Shuffle subset
+        shuffle_subset = False,  # Shuffle subset when max_size is used
         return_idx  = False,    # In addition to the image and label, return the raw dataset index.
         p_uncond    = 0.0,      # Probability of dropping the label.
         transform   = None,     # Transform to apply to images.

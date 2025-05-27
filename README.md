@@ -1,5 +1,22 @@
 # Experiment to investigate the Recombination Hypothesis
 
+![Comprehensive Analysis](file:///home/shared/generative_models/recombination/results/in512/l2/lpips-vgg-np16/edm2-img512-xl-1342177/comprehensive_analysiscomprehensive_analysis_edm2-img512-xl-1342177_id21.png)
+
+## DISCONTINUED
+
+I gave up on this experiment, as I believe that the approach is flawed. Specifically:
+- The patching approach is very ineffecient, as the patch size fixes a scale of patterns that we can detect. In 
+reality, diffusion models likely recombine patterns at different scales.
+- The concept of a "pattern" might be more abstract than literal pixel-level or feature-level copying
+- Naive patching will almost never capture a pattern in a way that a human does when we look at images and spot
+similarities. Patches practically always combine different patterns of different scales, making a clean "match" between
+patches extremely unlikely. 
+- The feature encodings are very rich, even in the last layers. There is a lot more information than just the patterns
+in there, like data augmentation information, making matching of "corresponding" patterns very difficult. We know this
+because features from e.g. DINOv2 can almost entirely reconstruct images, hence they contain a lot more information than
+we need.
+
+
 ## Hypothesis
 Diffusion models achieve diversity (which appears like generalization) through the recombination of learned patterns. Additionally, whereas local textures can be learned, more complicated (more global) patterns tend to be memorized, as they are more image-specific and thus harder to generalize. This recombination-behavior is distinctly different from how other generative models generalize, perhaps most contrasted by VAEs, which exhibit interpolation-like generalization.
 
