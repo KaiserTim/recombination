@@ -1,6 +1,6 @@
 # Experiment to investigate the Recombination Hypothesis
 
-![Comprehensive Analysis](./results/in512/l2/lpips-vgg-np16/edm2-img512-xl-1342177/comprehensive_analysiscomprehensive_analysis_edm2-img512-xl-1342177_id28.png)
+![Teaser](./results/in512/l2/dinov2-np16/edm2-img512-xl-1342177/visual_analysis/visual_analysis_id28.png)
 
 ## CONCLUDED
 
@@ -12,12 +12,17 @@ reality, diffusion models likely recombine patterns at different scales.
 similarities. Patches practically always combine different patterns of different scales, making a clean "match" between
 patches extremely unlikely.
 
+---
 
 ## Hypothesis
-Diffusion models achieve diversity (which appears like generalization) through the recombination of learned patterns. Additionally, whereas local textures can be learned, more complicated (more global) patterns tend to be memorized, as they are more image-specific and thus harder to generalize. This recombination-behavior is distinctly different from how other generative models generalize, perhaps most contrasted by VAEs, which exhibit interpolation-like generalization.
+Diffusion models achieve diversity (which appears like generalization) through the recombination of learned patterns. 
+Additionally, whereas local textures can be learned, more complicated (more global) patterns tend to be memorized, 
+as they are more image-specific and thus harder to generalize. This recombination-behavior is distinctly different from 
+how other generative models generalize, perhaps most contrasted by VAEs, which exhibit interpolation-like generalization.
 
 ## Approach
-Examine patch embeddings of generated images by comparing them to the patch embeddings of training images. Compare results between a diffusion model (EDM2) and a VAE (Visual-VAE).
+Examine patch embeddings of generated images by comparing them to the patch embeddings of training images. Compare 
+results between a diffusion model (EDM2) and a VAE (Visual-VAE).
 
 ## Experimental Pipeline
 
@@ -87,7 +92,10 @@ It allows batch processing of different experimental configurations with minimal
 The patch origin histogram and patch origin entropy show that EDM uses a larger number of different training images, 
 while the VAE is more selective. The distance histogram shows a stark difference between the models, with EDM having 
 much closer matches, overall and on average. This could be explained by memorization or the superior image quality of 
-EDM. The per-sample visualizations don't provide clear evidence for either explanation.
+EDM. 
+
+The various feature extractors show differences, with DINOv2 showing the best performance in the visual analysis.
+Patch matches are the most semantically meaningful, focusing less on textures and more on object semantics.
 
 ## Follow-up Experiments
 
