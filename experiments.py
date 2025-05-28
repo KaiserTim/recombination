@@ -38,7 +38,7 @@ def prepare_embeddings(embeddings, metric):
     
     Args:
         embeddings (torch.Tensor): Input tensor of shape (n, 256, D).
-        metric (str): Distance metric used ('l2', 'cosine', 'l2-norm', or 'lpips')
+        metric (str): Distance metric used ('l2', 'cosine', 'l2-norm')
     
     Returns:
         tuple: Contains:
@@ -70,7 +70,7 @@ def create_index(path_train, n_train, save_dir, index_func, metric, chunk_size):
         n_train (int): Number of training embeddings to load.
         save_dir (str): Directory where the FAISS index chunks will be saved.
         index_func: FAISS index function to use
-        metric (str): Distance metric to use ('l2', 'cosine', 'lpips')
+        metric (str): Distance metric to use ('l2', 'cosine')
         chunk_size (int): Number of embeddings to include in each chunk while creating 
             the FAISS index.
 
@@ -79,13 +79,6 @@ def create_index(path_train, n_train, save_dir, index_func, metric, chunk_size):
     """
     chunk_dir = os.path.join(save_dir, "faiss_index")
     os.makedirs(chunk_dir, exist_ok=True)
-
-    # Check if metric is lpips and feature_model is also lpips
-    if metric == 'lpips':
-        feature_model_name = os.path.basename(os.path.dirname(path_train))
-        if 'lpips' not in feature_model_name:
-            print(f"Warning: LPIPS metric requires LPIPS features, but got {feature_model_name} features.")
-            print("Proceeding anyway, but results may not be meaningful.")
 
     train_embeds = None
     pbar = None
@@ -114,7 +107,7 @@ def compute_faiss_index(data, index_func, metric, use_gpu, batch_size=1024):
     Inputs:
         data: Embeddings of image patches, (n_imgs, n_patches, D)
         use_gpu: Whether to use GPU for FAISS index
-         metric: Distance metric to use ('l2', 'cosine', or 'lpips')
+         metric: Distance metric to use ('l2', 'cosine')
         batch_size: Batch size for FAISS search (higher values will increase search speed but require more memory)
     Returns:
         all_indices: Indices of k-nearest neighbors from the training data for each patch, (n_gen, n_patches, k)
@@ -148,7 +141,7 @@ def compute_patchwise_nearest_neighbors(
         k=1,  # Number of nearest neighbors to return
         use_gpu=True,  # Use GPU if available
         batch_size=16,  # Batch size for FAISS search
-        metric='l2',  # Distance metric used ('l2', 'cosine', or 'lpips')
+        metric='l2',  # Distance metric used ('l2', 'cosine')
 ):
     """
     Compute the nearest neighbors of each generated patch using FAISS index chunks.
@@ -162,7 +155,7 @@ def compute_patchwise_nearest_neighbors(
         k: The number of nearest neighbors to return.
         use_gpu: Whether to use GPU for FAISS index processing.
         batch_size: Batch size for FAISS search.
-        metric: Distance metric ('l2', 'cosine', or 'lpips').
+        metric: Distance metric ('l2', 'cosine').
 
     Returns:
         all_indices: Indices of k-nearest neighbors for each generated patch, shape (n_gen, n_patches, k).
@@ -175,7 +168,7 @@ def compute_patchwise_nearest_neighbors(
 
     # Prepare overall results
     all_indices = np.full((len(gen_np), k), -1, dtype=np.int32)  # Initialize to -1
-    if metric == 'l2' or metric == 'lpips':
+    if metric == 'l2':
         # For L2 and LPIPS, we want to minimize distance, so initialize to infinity
         all_distances = np.full((len(gen_np), k), np.inf, dtype=np.float32) 
     else:
@@ -222,7 +215,7 @@ def compute_patchwise_nearest_neighbors(
                 combined_indices = np.concatenate((all_indices[i + j], chunk_indices[j]))
                 
                 # Sort based on the metric
-                if metric == 'l2' or metric == 'lpips':
+                if metric == 'l2':
                     # For L2 and LPIPS, we want the smallest distances (ascending order)
                     sorted_indices = np.argsort(combined_distances)[:k]  
                 else:
@@ -410,7 +403,7 @@ def create_distance_heatmap(distances, image_index, H, W, metric='l2'):
         distances (np.ndarray): Distances/similarities to nearest neighbors, shape (n_gen, n_patches, k)
         image_index (int): Index of the generated image
         H, W (int): Height and width of the original image
-        metric (str): Metric used ('l2', 'cosine', 'lpips')
+        metric (str): Metric used ('l2', 'cosine')
 
     Returns:
         tuple:
@@ -455,7 +448,6 @@ def create_distance_heatmap(distances, image_index, H, W, metric='l2'):
     title_map = {
         'l2': "L2 distance heatmap",
         'cosine': "Cosine similarity heatmap",
-        'lpips': "LPIPS distance heatmap",
         'dists': "DISTS similarity heatmap"
     }
 
@@ -469,8 +461,8 @@ def create_distance_heatmap(distances, image_index, H, W, metric='l2'):
     return heatmap, metadata
 
 
-def visualize_comprehensive_analysis(image_index, indices, distances, gen_dataset, train_dataset,
-                                     n_train, gen_model, save_dir=None, metric='l2'):
+def visualize_visual_analysis(image_index, indices, distances, gen_dataset, train_dataset,
+                              n_train, save_dir=None, metric='l2'):
     """
     Creates a comprehensive visualization with 5 subplots in the following order:
     1. Top contributor
@@ -578,12 +570,12 @@ def visualize_comprehensive_analysis(image_index, indices, distances, gen_datase
     # Save if a directory is provided
     if save_dir:
         os.makedirs(save_dir, exist_ok=True)
-        save_path = f"{save_dir}/comprehensive_analysis_{gen_model}_id{image_index}.png"
+        save_path = f"{save_dir}/visual_analysis_id{image_index}.png"
         plt.savefig(save_path, dpi=100, bbox_inches='tight')
     plt.close()
 
 
-def visualize_histogram(hist, gen_model, top_k=50, save_dir=None):
+def visualize_histogram(hist, top_k=50, save_dir=None):
     """Visualizes the patch origin histogram, i.e., the counts of how many patches came from each training image.
 
     Args:
@@ -608,7 +600,7 @@ def visualize_histogram(hist, gen_model, top_k=50, save_dir=None):
     plt.tight_layout()
     # plt.ylim([0,600])
     if save_dir:
-        save_path = f"{save_dir}/patch_origin_histogram_{gen_model}.png"
+        save_path = f"{save_dir}/patch_origin_histogram.png"
         plt.savefig(save_path, dpi=100, bbox_inches='tight')
     plt.show()
 
@@ -646,7 +638,7 @@ def visualize_dist_histogram(distances, gen_model, metric, save_dir=None):
     # plt.xlim([0, 3000])
     # plt.ylim([0, 12000])
     if save_dir:
-        save_path = f"{save_dir}/patch_distance_hist_{gen_model}.png"
+        save_path = f"{save_dir}/patch_distance_hist.png"
         plt.savefig(save_path, dpi=100, bbox_inches='tight')
     plt.show()
 
@@ -659,7 +651,7 @@ def visualize_dist_histogram(distances, gen_model, metric, save_dir=None):
     # plt.xlim([500, 2500])
     plt.ylim([0, 50])
     if save_dir:
-        save_path = f"{save_dir}/mean_patch_distance_per_sample_{gen_model}.png"
+        save_path = f"{save_dir}/mean_patch_distance_per_sample.png"
         plt.savefig(save_path, dpi=100, bbox_inches='tight')
     plt.show()
 
@@ -678,7 +670,7 @@ def visualize_dist_histogram(distances, gen_model, metric, save_dir=None):
 @click.option('--load_nns',         type=bool,  default=True,                                           help="Whether to load precomputed nearest neighbors.")
 @click.option('--n_train',          type=int,   default=10000,                                          help="How many training images to use for the NN search.")
 @click.option('--n_gen',            type=int,   default=1000,                                           help="How many generated images to use for the NN search.")
-@click.option('--metric',           type=click.Choice(['l2', 'l2-norm', 'cosine', 'lpips']), default='cosine',   help="Distance metric to use for nearest neighbor search.")
+@click.option('--metric',           type=click.Choice(['l2', 'l2-norm', 'cosine']),                     help="Distance metric to use for nearest neighbor search.")
 def main(top_folder, dataset, gen_model, feature_model, load_nns, n_train, n_gen, metric):
     embedding_dir = os.path.join(top_folder, f'embeddings/{dataset}/{feature_model}')
     save_dir = os.path.join(top_folder, f'saves/{dataset}/{metric}/{feature_model}')
@@ -749,9 +741,7 @@ def main(top_folder, dataset, gen_model, feature_model, load_nns, n_train, n_gen
     print(f"Patch Origin Entropy: {ent:.4f}")
     print(f"Unique Training Sources: {uniq} / {n_train}")
     os.makedirs(f"{results_dir}/{gen_model}", exist_ok=True)
-    visualize_histogram(hist,
-                        gen_model=gen_model,
-                        save_dir=f"{results_dir}/{gen_model}")
+    visualize_histogram(hist, save_dir=f"{results_dir}/{gen_model}")
     visualize_dist_histogram(distances,
                              gen_model=gen_model,
                              metric=metric,
@@ -775,16 +765,15 @@ def main(top_folder, dataset, gen_model, feature_model, load_nns, n_train, n_gen
     train_dataset_obj = dnnlib.util.construct_class_by_name(**train_dataset_kwargs)
 
     for idx in tqdm(range(64), desc=f"Visual analysis"):
-        visualize_comprehensive_analysis(image_index=idx,
+        visualize_visual_analysis(image_index=idx,
                                          indices=indices,
                                          distances=distances,
                                          gen_dataset=gen_dataset_obj,
                                          train_dataset=train_dataset_obj,
                                          n_train=n_train,
-                                         gen_model=gen_model,
-                                         save_dir=f"{results_dir}/{gen_model}/comprehensive_analysis",
+                                         save_dir=f"{results_dir}/{gen_model}/visual_analysis",
                                          metric=metric)
-    print(f"Saved analysis visualizations to {f'{results_dir}/{gen_model}/comprehensive_analysis/'}")
+    print(f"Saved analysis visualizations to {f'{results_dir}/{gen_model}/visual_analysis/'}")
 
     metrics_dict = {"nearest_neighbors_indices": indices,
                     "nearest_neighbors_distances": distances,

@@ -1,20 +1,16 @@
 # Experiment to investigate the Recombination Hypothesis
 
-![Comprehensive Analysis](file:///home/shared/generative_models/recombination/results/in512/l2/lpips-vgg-np16/edm2-img512-xl-1342177/comprehensive_analysiscomprehensive_analysis_edm2-img512-xl-1342177_id21.png)
+![Comprehensive Analysis](./results/in512/l2/lpips-vgg-np16/edm2-img512-xl-1342177/comprehensive_analysiscomprehensive_analysis_edm2-img512-xl-1342177_id28.png)
 
-## DISCONTINUED
+## CONCLUDED
 
-I gave up on this experiment, as I believe that the approach is flawed. Specifically:
+This experiment likely has some conceptual limitations. Specifically:
 - The patching approach is very ineffecient, as the patch size fixes a scale of patterns that we can detect. In 
 reality, diffusion models likely recombine patterns at different scales.
 - The concept of a "pattern" might be more abstract than literal pixel-level or feature-level copying
-- Naive patching will almost never capture a pattern in a way that a human does when we look at images and spot
+- Naive patching is unlikely to capture a pattern in a way that a human does when we look at images and spot
 similarities. Patches practically always combine different patterns of different scales, making a clean "match" between
-patches extremely unlikely. 
-- The feature encodings are very rich, even in the last layers. There is a lot more information than just the patterns
-in there, like data augmentation information, making matching of "corresponding" patterns very difficult. We know this
-because features from e.g. DINOv2 can almost entirely reconstruct images, hence they contain a lot more information than
-we need.
+patches extremely unlikely.
 
 
 ## Hypothesis
@@ -110,12 +106,9 @@ patterns, besides color. Entropy measurements remain almost constant across mode
 ## Problems and Limitations
 
 ### Conceptual Limitations
-There appears to be a fundamental conceptual issue with the approach. The lack of meaningful matches across multiple 
-feature extractors and distance metrics suggests a deeper problem:
 
 1. **The Recombination Hypothesis Itself**:
-   - The hypothesis assumes that diffusion models reuse "patterns" from training data
-   - However, the concept of a "pattern" might be more abstract than literal pixel-level or feature-level copying
+   - The hypothesis assumes that diffusion models reuse "patterns" from training data. However, the concept of a "pattern" might be more abstract than literal pixel-level or feature-level copying
    - The model might be learning to generate similar statistical properties rather than reusing exact patches
 
 2. **Scale of Patterns**:

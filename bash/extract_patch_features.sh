@@ -1,15 +1,14 @@
 #!/bin/bash
 
-resolution=512
-feature_model='lpips-vgg'  # Options: swav, dinov2, lpips-alex, lpips-vgg, lpips-squeeze
+# todo dinov2-np64 on IN512
+# todo dinov2-np16 on IN64
+
+#resolution=64
+#feature_model='lpips-vgg'  # Options: swav, dinov2, lpips-alex, lpips-vgg, lpips-squeeze
 top_folder="/home/shared/generative_models/recombination"
-for resolution in 512 64 ; do
+for resolution in 64 ; do
   dataset="in${resolution}"
-  if [[ "$resolution" == 512 ]]; then
-    feature_models='dinov2 swav'
-  else
-    feature_models='dinov2 swav lpips-vgg'
-  fi
+  feature_models='dinov2'
   for feature_model in $feature_models ; do
     for n_patches in 16 ; do
       for factor in 500 ; do
@@ -34,15 +33,16 @@ for resolution in 512 64 ; do
         --n_patches $n_patches \
         --outdir "${top_folder}/embeddings/${dataset}/${feature_model}-np${n_patches}/${gen_model}" \
         --max_size $(( 5 * 1024 )) ;
+
+    # Visual-VAE
+    python extract_patch_features.py \
+      --feature_model $feature_model \
+      --n_patches $n_patches \
+      --resolution $resolution \
+      --dataset "${top_folder}/raw_samples/${dataset}/v_vae_m0.0_v0.0/50000_random_classes_m0.0_v0.0.zip" \
+      --outdir "${top_folder}/embeddings/${dataset}/${feature_model}-np${n_patches}/v_vae_m0.0_v0.0" \
+      --max_size $(( 5 * 1024 )) ;
     done
    done
   done
 done
-
-  ## Visual-VAE
-  #python extract_patch_features.py \
-  #  --feature_model $feature_model \
-  #  --n_patches $n_patches \
-  #  --dataset "${top_folder}/raw_samples/${dataset}/v_vae_m0.0_v0.0/50000_random_classes_m0.0_v0.0.zip" \
-  #  --outdir "${top_folder}/embeddings/${dataset}/${feature_model}-np${n_patches}/v_vae_m0.0_v0.0" \
-  #  --max_size $(( 5 * 1024 )) ;
