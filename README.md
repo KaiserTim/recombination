@@ -1,6 +1,38 @@
 # Experiment to investigate the Recombination Hypothesis
 
-![Teaser](./results/in512/l2/dinov2-np16/edm2-img512-xl-1342177/visual_analysis/visual_analysis_id28.png)
+![Teaser](./results/in512/cosine/dinov2-np16/edm2-img512-xl-1342177/visual_analysis/visual_analysis_id28.png)
+
+---
+
+## Hypothesis
+Diffusion models achieve diversity (which appears like generalization) through the recombination of learned patterns. 
+Additionally, whereas local textures can be learned, more complicated (more global) patterns tend to be memorized, 
+as they are more image-specific and thus harder to generalize. This recombination-behavior is distinctly different from 
+how other generative models generalize, perhaps most contrasted by VAEs, which exhibit interpolation-like generalization.
+
+## Approach
+Examine patch embeddings of generated images by comparing them to the patch embeddings of training images. Visually 
+inspect the results on high-resolution images on IN512 and compare results statistically between a diffusion model 
+(EDM2) and a VAE (Visual-VAE) on IN64.
+
+## Results
+
+`Quantitative:` On IN64, the patch origin histogram and patch origin entropy show that EDM uses a larger number of 
+different training images, while the VAE is more selective, however, the differences are too small to attribute this 
+to soley to their generalization behavior. The distance histogram shows closer matches for EDM than for the VAE, 
+overall and on average, however the differences are again small. This could be explained by memorization or the 
+superior image quality of EDM.
+
+`Qualitative:` While the results show strong and consistent similarities between generated and training patches on 
+IN512, this cannot be distinguished from proper generalization on a large dataset. I have not seen matches including
+patters which are too complicated, yet too similar at the same time, to indicate direct 'reuse' from the training
+data. Instead, generalization, i.e., the flexible adaptaion of learned patterns to the context of the image seems to
+work very well.
+
+The various feature extractors show differences, with DINOv2 showing the best performance in the visual analysis.
+Patch matches are the most semantically meaningful, focusing less on textures and more on object semantics.
+
+---
 
 ## CONCLUDED
 
@@ -13,16 +45,6 @@ similarities. Patches practically always combine different patterns of different
 patches extremely unlikely.
 
 ---
-
-## Hypothesis
-Diffusion models achieve diversity (which appears like generalization) through the recombination of learned patterns. 
-Additionally, whereas local textures can be learned, more complicated (more global) patterns tend to be memorized, 
-as they are more image-specific and thus harder to generalize. This recombination-behavior is distinctly different from 
-how other generative models generalize, perhaps most contrasted by VAEs, which exhibit interpolation-like generalization.
-
-## Approach
-Examine patch embeddings of generated images by comparing them to the patch embeddings of training images. Compare 
-results between a diffusion model (EDM2) and a VAE (Visual-VAE).
 
 ## Experimental Pipeline
 
@@ -87,15 +109,6 @@ LPIPS-Alex, LPIPS-VGG), and handles both training and generated images from vari
 This script automates the analysis pipeline by running experiments with different similarity metrics (L2, cosine), 
 processing results for different generative models, and configuring dataset sizes and feature model combinations. 
 It allows batch processing of different experimental configurations with minimal manual intervention.
-
-## Results
-The patch origin histogram and patch origin entropy show that EDM uses a larger number of different training images, 
-while the VAE is more selective. The distance histogram shows a stark difference between the models, with EDM having 
-much closer matches, overall and on average. This could be explained by memorization or the superior image quality of 
-EDM. 
-
-The various feature extractors show differences, with DINOv2 showing the best performance in the visual analysis.
-Patch matches are the most semantically meaningful, focusing less on textures and more on object semantics.
 
 ## Follow-up Experiments
 

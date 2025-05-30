@@ -179,7 +179,7 @@ def compute_patchwise_nearest_neighbors(
     chunk_paths = sorted(glob.glob(f"{chunk_dir}/chunk_*.bin"))  # Sorted to ensure correct order
     chunk_paths = [path for path in chunk_paths if int(path.split('_')[-1].split('.')[0]) < n_train]
 
-    pbar = tqdm(enumerate(chunk_paths), total=len(chunk_paths), desc=f"Performing NN search for {n_gen} images with {n_patches} patches each, against {n_train} training images from directory", file=sys.stdout)
+    pbar = tqdm(enumerate(chunk_paths), total=len(chunk_paths), desc=f"Performing NN search for {n_gen} images with {n_patches} patches each, against {n_train} training images from directory", ascii=True)
     for chunk_idx, chunk_path in pbar:
         # Load and potentially truncate the index chunk
         index = faiss.read_index(chunk_path)
@@ -556,13 +556,13 @@ def visualize_visual_analysis(image_index, indices, distances, gen_dataset, trai
     cbar.set_ticks([0, 0.5, 1])
     if metric == 'l2':
         # For L2, show the max at the bottom, min at the top (since we inverted)
-        cbar.set_ticklabels([f"{heatmap_metadata['max_value']:.1e}",
-                            f"{(heatmap_metadata['min_value'] + heatmap_metadata['max_value'])/2:.1e}",
-                            f"{heatmap_metadata['min_value']:.1e}"])
+        cbar.set_ticklabels([f"{heatmap_metadata['max_value']:.1f}",
+                            f"{(heatmap_metadata['min_value'] + heatmap_metadata['max_value'])/2:.1f}",
+                            f"{heatmap_metadata['min_value']:.1f}"])
     else:
         # For cosine, show min at bottom, max at top
-        cbar.set_ticklabels([f"{heatmap_metadata['min_value']:.2f}", 
-                            f"{(heatmap_metadata['min_value'] + heatmap_metadata['max_value'])/2:.2f}", 
+        cbar.set_ticklabels([f"{heatmap_metadata['min_value']:.2f}",
+                            f"{(heatmap_metadata['min_value'] + heatmap_metadata['max_value'])/2:.2f}",
                             f"{heatmap_metadata['max_value']:.2f}"])
 
     plt.tight_layout()
@@ -649,7 +649,7 @@ def visualize_dist_histogram(distances, gen_model, metric, save_dir=None):
     plt.xlabel('Mean Distance')
     plt.ylabel('# Generated Samples')
     # plt.xlim([500, 2500])
-    plt.ylim([0, 50])
+    # plt.ylim([0, 50])
     if save_dir:
         save_path = f"{save_dir}/mean_patch_distance_per_sample.png"
         plt.savefig(save_path, dpi=100, bbox_inches='tight')
@@ -748,6 +748,7 @@ def main(top_folder, dataset, gen_model, feature_model, load_nns, n_train, n_gen
                              save_dir=f"{results_dir}/{gen_model}")
     print(f"Saved histograms to {results_dir}")
 
+    # VISUAL ANALYSIS
     # Load dataset of generated images
     gen_dataset_path = f"/home/shared/generative_models/recombination/raw_samples/{dataset}/{gen_model}"
     if "v_vae" in gen_model:
@@ -773,7 +774,7 @@ def main(top_folder, dataset, gen_model, feature_model, load_nns, n_train, n_gen
                                          n_train=n_train,
                                          save_dir=f"{results_dir}/{gen_model}/visual_analysis",
                                          metric=metric)
-    print(f"Saved analysis visualizations to {f'{results_dir}/{gen_model}/visual_analysis/'}")
+    print(f"Saved visualizations to {f'{results_dir}/{gen_model}/visual_analysis/'}")
 
     metrics_dict = {"nearest_neighbors_indices": indices,
                     "nearest_neighbors_distances": distances,
